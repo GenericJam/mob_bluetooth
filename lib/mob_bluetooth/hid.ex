@@ -66,7 +66,7 @@ defmodule MobBluetooth.Hid do
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
     json = MobBluetooth.encode_device(device)
-    :mob_nif.bt_hid_connect(json)
+    :mob_bluetooth_nif.bt_hid_connect(json)
     socket
   end
 
@@ -80,7 +80,7 @@ defmodule MobBluetooth.Hid do
   """
   @spec subscribe_raw(socket :: term(), MobBluetooth.session_id()) :: term()
   def subscribe_raw(socket, session_id) when is_integer(session_id) do
-    :mob_nif.bt_hid_subscribe_raw(session_id)
+    :mob_bluetooth_nif.bt_hid_subscribe_raw(session_id)
     socket
   end
 end

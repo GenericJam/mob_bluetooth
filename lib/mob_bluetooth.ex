@@ -87,7 +87,7 @@ defmodule MobBluetooth do
   """
   @spec list_paired(socket :: term()) :: term()
   def list_paired(socket) do
-    :mob_nif.bt_list_paired()
+    :mob_bluetooth_nif.bt_list_paired()
     socket
   end
 
@@ -100,7 +100,7 @@ defmodule MobBluetooth do
   """
   @spec start_discovery(socket :: term()) :: term()
   def start_discovery(socket) do
-    :mob_nif.bt_start_discovery()
+    :mob_bluetooth_nif.bt_start_discovery()
     socket
   end
 
@@ -109,7 +109,7 @@ defmodule MobBluetooth do
   """
   @spec cancel_discovery(socket :: term()) :: term()
   def cancel_discovery(socket) do
-    :mob_nif.bt_cancel_discovery()
+    :mob_bluetooth_nif.bt_cancel_discovery()
     socket
   end
 
@@ -129,7 +129,7 @@ defmodule MobBluetooth do
   def pair(socket, device, opts \\ []) do
     pin = Keyword.get(opts, :pin)
     json = encode_pair(device, pin)
-    :mob_nif.bt_pair(json)
+    :mob_bluetooth_nif.bt_pair(json)
     socket
   end
 
@@ -141,7 +141,7 @@ defmodule MobBluetooth do
   @spec unpair(socket :: term(), device()) :: term()
   def unpair(socket, device) do
     json = encode_device(device)
-    :mob_nif.bt_unpair(json)
+    :mob_bluetooth_nif.bt_unpair(json)
     socket
   end
 
@@ -159,7 +159,7 @@ defmodule MobBluetooth do
   """
   @spec disconnect(socket :: term(), session_id()) :: term()
   def disconnect(socket, session_id) when is_integer(session_id) do
-    :mob_nif.bt_disconnect(session_id)
+    :mob_bluetooth_nif.bt_disconnect(session_id)
     socket
   end
 
