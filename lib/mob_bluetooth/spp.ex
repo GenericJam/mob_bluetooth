@@ -59,9 +59,13 @@ defmodule MobBluetooth.Spp do
   """
   @spec connect(socket :: term(), MobBluetooth.device(), keyword()) :: term()
   def connect(socket, device, opts \\ []) do
-    json = encode_connect(device, opts)
-    :mob_bluetooth_nif.bt_spp_connect(json)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      json = encode_connect(device, opts)
+      :mob_bluetooth_nif.bt_spp_connect(json)
+      socket
+    end
   end
 
   @doc false
@@ -89,7 +93,11 @@ defmodule MobBluetooth.Spp do
   @spec write(socket :: term(), MobBluetooth.session_id(), binary()) :: term()
   def write(socket, session_id, bytes)
       when is_integer(session_id) and is_binary(bytes) do
-    :mob_bluetooth_nif.bt_spp_write(session_id, bytes)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_spp_write(session_id, bytes)
+      socket
+    end
   end
 end

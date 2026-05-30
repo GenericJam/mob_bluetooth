@@ -71,9 +71,13 @@ defmodule MobBluetooth.Hfp do
   """
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
-    json = MobBluetooth.encode_device(device)
-    :mob_bluetooth_nif.bt_hfp_connect(json)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      json = MobBluetooth.encode_device(device)
+      :mob_bluetooth_nif.bt_hfp_connect(json)
+      socket
+    end
   end
 
   @doc """
@@ -104,9 +108,13 @@ defmodule MobBluetooth.Hfp do
   @spec subscribe_vendor_at(socket :: term(), MobBluetooth.session_id(), keyword()) :: term()
   def subscribe_vendor_at(socket, session_id, opts \\ [])
       when is_integer(session_id) and is_list(opts) do
-    json = encode_vendor_at_opts(opts)
-    :mob_bluetooth_nif.bt_hfp_subscribe_vendor_at(session_id, json)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      json = encode_vendor_at_opts(opts)
+      :mob_bluetooth_nif.bt_hfp_subscribe_vendor_at(session_id, json)
+      socket
+    end
   end
 
   @doc false
@@ -129,8 +137,12 @@ defmodule MobBluetooth.Hfp do
           term()
   def send_vendor_at(socket, session_id, cmd, args \\ "")
       when is_integer(session_id) and is_binary(cmd) and is_binary(args) do
-    :mob_bluetooth_nif.bt_hfp_send_vendor_at(session_id, cmd, args)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_hfp_send_vendor_at(session_id, cmd, args)
+      socket
+    end
   end
 
   @doc """
@@ -144,8 +156,12 @@ defmodule MobBluetooth.Hfp do
   """
   @spec start_sco(socket :: term(), MobBluetooth.session_id()) :: term()
   def start_sco(socket, session_id) when is_integer(session_id) do
-    :mob_bluetooth_nif.bt_hfp_start_sco(session_id)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_hfp_start_sco(session_id)
+      socket
+    end
   end
 
   @doc """
@@ -155,8 +171,12 @@ defmodule MobBluetooth.Hfp do
   """
   @spec stop_sco(socket :: term(), MobBluetooth.session_id()) :: term()
   def stop_sco(socket, session_id) when is_integer(session_id) do
-    :mob_bluetooth_nif.bt_hfp_stop_sco(session_id)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_hfp_stop_sco(session_id)
+      socket
+    end
   end
 
   @doc """
@@ -170,7 +190,11 @@ defmodule MobBluetooth.Hfp do
   @spec send_audio(socket :: term(), MobBluetooth.session_id(), binary()) :: term()
   def send_audio(socket, session_id, pcm_bytes)
       when is_integer(session_id) and is_binary(pcm_bytes) do
-    :mob_bluetooth_nif.bt_hfp_send_audio(session_id, pcm_bytes)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_hfp_send_audio(session_id, pcm_bytes)
+      socket
+    end
   end
 end

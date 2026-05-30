@@ -65,9 +65,13 @@ defmodule MobBluetooth.Hid do
   """
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
-    json = MobBluetooth.encode_device(device)
-    :mob_bluetooth_nif.bt_hid_connect(json)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      json = MobBluetooth.encode_device(device)
+      :mob_bluetooth_nif.bt_hid_connect(json)
+      socket
+    end
   end
 
   @doc """
@@ -80,7 +84,11 @@ defmodule MobBluetooth.Hid do
   """
   @spec subscribe_raw(socket :: term(), MobBluetooth.session_id()) :: term()
   def subscribe_raw(socket, session_id) when is_integer(session_id) do
-    :mob_bluetooth_nif.bt_hid_subscribe_raw(session_id)
-    socket
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_hid_subscribe_raw(session_id)
+      socket
+    end
   end
 end
