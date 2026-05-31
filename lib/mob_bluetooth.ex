@@ -16,12 +16,30 @@ defmodule MobBluetooth do
   ## API style
 
   Same as the rest of Mob: callbacks return `socket` unchanged, results
-  arrive in `handle_info/2` as 4-tuples:
+  arrive in `handle_info/2` as messages. There are two families, and they
+  do **not** share a uniform arity:
 
-      {:bt, event_atom, session_id_or_nil, payload}
+  **Device-level events** are tagged `:bt` and carry no session id:
 
-  Discovery / pairing events use `nil` for session_id; profile events
-  carry the session_id returned from the matching `connect/2`.
+      {:bt, :discovery_started}                  # 2-tuple, no payload
+      {:bt, :discovery_finished}
+      {:bt, :discovery_cancelled}
+      {:bt, :discovered, device}                 # 3-tuple, device map
+      {:bt, :paired, device}
+      {:bt, :pair_failed, %{address: addr, reason: atom}}
+      {:bt, :unpaired, device}
+      {:bt, :paired_list, [device]}
+      {:bt, :error, payload}
+
+  **Profile events** are tagged by profile (`:bt_hfp`, `:bt_spp`,
+  `:bt_hid`) — not `:bt`. Once a session exists they carry its integer
+  `session_id` as the third element; pre-session failures omit it:
+
+      {:bt_hfp, :connected, session_id, payload}     # 4-tuple, has session
+      {:bt_hfp, :connect_failed, %{address: addr, reason: atom}}  # 3-tuple, no session yet
+      {:bt_hfp, :disconnected, session_id, reason}
+
+  The profile submodules document their own event sets.
 
   ## Permissions
 
@@ -61,7 +79,7 @@ defmodule MobBluetooth do
 
   The framework looks up which profile owns the session_id and routes
   to the right profile-disconnect internally. Emits a profile-specific
-  event (`{:bt, :hfp_disconnected, ...}` etc).
+  disconnect event (`{:bt_hfp, :disconnected, session_id, reason}` etc).
   """
 
   @typedoc "An opaque session identifier for an active profile connection."
@@ -83,7 +101,7 @@ defmodule MobBluetooth do
   @doc """
   List currently paired (bonded) Bluetooth devices.
 
-  Result arrives as `{:bt, :paired_devices, nil, [device]}`.
+  Result arrives as `{:bt, :paired_list, [device]}`.
   """
   @spec list_paired(socket :: term()) :: term()
   def list_paired(socket) do
@@ -97,8 +115,8 @@ defmodule MobBluetooth do
 
   @doc """
   Begin Bluetooth Classic discovery. Discovered devices arrive as
-  individual `{:bt, :device_discovered, nil, device}` messages, terminated
-  by `{:bt, :discovery_finished, nil, nil}`.
+  individual `{:bt, :discovered, device}` messages, terminated by
+  `{:bt, :discovery_finished}`.
 
   Discovery typically runs ~12 seconds on Android.
   """
@@ -134,8 +152,8 @@ defmodule MobBluetooth do
 
   Result arrives as one of:
 
-    * `{:bt, :pair_succeeded, nil, device}`
-    * `{:bt, :pair_failed, nil, %{device: device, reason: atom()}}`
+    * `{:bt, :paired, device}`
+    * `{:bt, :pair_failed, %{address: String.t(), reason: atom()}}`
   """
   @spec pair(socket :: term(), device(), keyword()) :: term()
   def pair(socket, device, opts \\ []) do
@@ -152,7 +170,7 @@ defmodule MobBluetooth do
   @doc """
   Remove an existing pairing (bond).
 
-  Result: `{:bt, :unpaired, nil, device}`.
+  Result: `{:bt, :unpaired, device}`.
   """
   @spec unpair(socket :: term(), device()) :: term()
   def unpair(socket, device) do
@@ -173,9 +191,9 @@ defmodule MobBluetooth do
 
   Emits a profile-specific disconnect event:
 
-    * `{:bt, :hfp_disconnected, session_id, reason}`
-    * `{:bt, :spp_disconnected, session_id, reason}`
-    * `{:bt, :hid_disconnected, session_id, reason}`
+    * `{:bt_hfp, :disconnected, session_id, reason}`
+    * `{:bt_spp, :disconnected, session_id, reason}`
+    * `{:bt_hid, :disconnected, session_id, reason}`
   """
   @spec disconnect(socket :: term(), session_id()) :: term()
   def disconnect(socket, session_id) when is_integer(session_id) do

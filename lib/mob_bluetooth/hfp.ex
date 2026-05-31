@@ -12,22 +12,22 @@ defmodule MobBluetooth.Hfp do
 
       # 1. Pair (only needed once per device — MobBluetooth.pair/2)
       socket = MobBluetooth.pair(socket, device)
-      # {:bt, :pair_succeeded, nil, device}
+      # {:bt, :paired, device}
 
       # 2. Connect HFP profile
       socket = MobBluetooth.Hfp.connect(socket, device)
-      # {:bt, :hfp_connected, session_id, device}
+      # {:bt_hfp, :connected, session_id, payload}
 
       # 3. (Optional) subscribe to vendor AT commands the headset emits.
       #    Hytera EHW02 fires +CTXD on PTT press, +CUTXC on release.
       socket = MobBluetooth.Hfp.subscribe_vendor_at(socket, session_id)
-      # {:bt, :vendor_at, session_id, %{cmd: "+CTXD", args: ""}}
+      # {:bt_hfp, :vendor_at, session_id, %{cmd: "+CTXD", args: ""}}
 
       # 4. (Optional) bring up the SCO audio link.
       socket = MobBluetooth.Hfp.start_sco(socket, session_id)
-      # {:bt, :sco_started, session_id, %{sample_rate: 8000, ...}}
+      # {:bt_hfp, :sco_started, session_id, payload}
       # then audio chunks stream as:
-      # {:bt, :sco_audio_in, session_id, pcm_bytes}
+      # {:bt_hfp, :sco_audio, session_id, pcm_bytes}
 
       # 5. Send PCM audio out to the headset earpiece:
       MobBluetooth.Hfp.send_audio(socket, session_id, pcm_bytes)
@@ -40,7 +40,7 @@ defmodule MobBluetooth.Hfp do
   HFP defines a small core AT vocabulary (call control, volume, ring).
   Headset vendors extend with their own `+`-prefixed commands. Subscribing
   via `subscribe_vendor_at/2` delivers any *unrecognized* AT command from
-  the headset as `{:bt, :vendor_at, session_id, %{cmd, args}}` for your
+  the headset as `{:bt_hfp, :vendor_at, session_id, %{cmd, args}}` for your
   app to interpret.
 
   Sending a vendor AT command to the headset is `send_vendor_at/4`.
@@ -65,9 +65,9 @@ defmodule MobBluetooth.Hfp do
   Open an HFP profile connection to `device`. The device must already
   be paired (`MobBluetooth.pair/2`).
 
-  Result: `{:bt, :hfp_connected, session_id, device}` on success,
-  `{:bt, :hfp_connect_failed, nil, %{device: device, reason: atom()}}`
-  on failure.
+  Result: `{:bt_hfp, :connected, session_id, payload}` on success,
+  `{:bt_hfp, :connect_failed, %{address: String.t(), reason: atom()}}`
+  on failure (3-tuple — no session id exists yet).
   """
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
@@ -99,7 +99,7 @@ defmodule MobBluetooth.Hfp do
   Standard (non-vendor) AT commands are handled by Android's HFP stack
   and never surface here.
 
-  Stream events: `{:bt, :vendor_at, session_id, %{cmd: String.t(), cmd_type: integer(), args: String.t(), address: String.t()}}`.
+  Stream events: `{:bt_hfp, :vendor_at, session_id, %{cmd: String.t(), cmd_type: integer(), args: String.t(), address: String.t()}}`.
 
   ## Example
 
@@ -148,11 +148,9 @@ defmodule MobBluetooth.Hfp do
   @doc """
   Open the SCO audio link for this HFP session.
 
-  Emits `{:bt, :sco_started, session_id, %{sample_rate: integer, encoding: atom, channels: integer}}`
-  when the link is up. Mic audio then streams as
-  `{:bt, :sco_audio_in, session_id, pcm_bytes}`.
-
-  On failure: `{:bt, :sco_failed, session_id, reason}`.
+  Emits `{:bt_hfp, :sco_started, session_id, payload}` when the link is up.
+  Mic audio then streams as `{:bt_hfp, :sco_audio, session_id, pcm_bytes}`
+  (a binary). On failure: `{:bt_hfp, :error, session_id, reason}`.
   """
   @spec start_sco(socket :: term(), MobBluetooth.session_id()) :: term()
   def start_sco(socket, session_id) when is_integer(session_id) do
@@ -167,7 +165,7 @@ defmodule MobBluetooth.Hfp do
   @doc """
   Close the SCO audio link without disconnecting the HFP session.
 
-  Emits `{:bt, :sco_stopped, session_id, nil}`.
+  Emits `{:bt_hfp, :sco_stopped, session_id}` (3-tuple).
   """
   @spec stop_sco(socket :: term(), MobBluetooth.session_id()) :: term()
   def stop_sco(socket, session_id) when is_integer(session_id) do

@@ -17,10 +17,10 @@ defmodule MobBluetooth.Spp do
       #    The well-known SPP UUID is "00001101-0000-1000-8000-00805F9B34FB".
       socket = MobBluetooth.Spp.connect(socket, device,
                  uuid: "00001101-0000-1000-8000-00805F9B34FB")
-      # {:bt, :spp_connected, session_id, device}
+      # {:bt_spp, :connected, session_id, payload}
 
       # 3. Receive bytes:
-      # {:bt, :spp_data, session_id, bytes}
+      # {:bt_spp, :data, session_id, bytes}
 
       # 4. Send bytes:
       MobBluetooth.Spp.write(socket, session_id, "ATZ\\r\\n")
@@ -53,9 +53,9 @@ defmodule MobBluetooth.Spp do
     * `:uuid` — RFCOMM service UUID (default: `"#{@standard_spp_uuid}"`)
     * `:secure` — `true` (default, encrypted) or `false` (legacy insecure)
 
-  Result: `{:bt, :spp_connected, session_id, device}` on success,
-  `{:bt, :spp_connect_failed, nil, %{device: device, reason: atom()}}`
-  on failure.
+  Result: `{:bt_spp, :connected, session_id, payload}` on success,
+  `{:bt_spp, :connect_failed, %{address: String.t(), reason: atom()}}`
+  on failure (3-tuple — no session id exists yet).
   """
   @spec connect(socket :: term(), MobBluetooth.device(), keyword()) :: term()
   def connect(socket, device, opts \\ []) do
@@ -87,7 +87,7 @@ defmodule MobBluetooth.Spp do
   output stream and flushed asynchronously. No completion event.
 
   Errors during write are surfaced as
-  `{:bt, :spp_disconnected, session_id, reason}` (Kotlin closes the
+  `{:bt_spp, :disconnected, session_id, reason}` (Kotlin closes the
   socket on write failure).
   """
   @spec write(socket :: term(), MobBluetooth.session_id(), binary()) :: term()

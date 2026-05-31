@@ -21,12 +21,10 @@ defmodule MobBluetooth.Hid do
 
       # 2. Connect HID profile.
       socket = MobBluetooth.Hid.connect(socket, device)
-      # {:bt, :hid_connected, session_id, device}
+      # {:bt_hid, :connected, session_id, payload}
 
-      # 3. Input reports stream:
-      # {:bt, :hid_input, session_id,
-      #   %{usage_page: 0x07, usage: 0x29, value: 1}}
-      #   (HID Keyboard/Keypad, key 0x29 = Escape, pressed)
+      # 3. Input reports stream as a decoded {type, code, value} map:
+      # {:bt_hid, :input, session_id, %{type: integer, code: integer, value: integer}}
 
       # 4. Disconnect (MobBluetooth.disconnect/2)
 
@@ -47,10 +45,10 @@ defmodule MobBluetooth.Hid do
   ## Receiving raw reports
 
   If the device's HID descriptor is non-standard or the high-level
-  `:hid_input` shape isn't sufficient, subscribe to raw reports with
-  `subscribe_raw/2` and parse the bytes yourself.
+  `{:bt_hid, :input, ...}` shape isn't sufficient, subscribe to raw reports
+  with `subscribe_raw/2` and parse the bytes yourself.
 
-  Stream: `{:bt, :hid_raw_report, session_id, %{report_id: integer, bytes: binary}}`.
+  Stream: `{:bt_hid, :raw_report, session_id, bytes}` (a binary).
   """
 
   alias MobBluetooth
@@ -59,9 +57,9 @@ defmodule MobBluetooth.Hid do
   Open an HID profile connection to `device`. The device must already be
   paired.
 
-  Result: `{:bt, :hid_connected, session_id, device}` on success,
-  `{:bt, :hid_connect_failed, nil, %{device: device, reason: atom()}}`
-  on failure.
+  Result: `{:bt_hid, :connected, session_id, payload}` on success,
+  `{:bt_hid, :connect_failed, %{address: String.t(), reason: atom()}}`
+  on failure (3-tuple — no session id exists yet).
   """
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
@@ -78,9 +76,9 @@ defmodule MobBluetooth.Hid do
   Subscribe to raw HID input reports (bypasses Android's parser).
 
   Use only when the device's HID descriptor is non-standard or the
-  high-level `:hid_input` events miss data you need.
+  high-level `{:bt_hid, :input, ...}` events miss data you need.
 
-  Stream: `{:bt, :hid_raw_report, session_id, %{report_id, bytes}}`.
+  Stream: `{:bt_hid, :raw_report, session_id, bytes}` (a binary).
   """
   @spec subscribe_raw(socket :: term(), MobBluetooth.session_id()) :: term()
   def subscribe_raw(socket, session_id) when is_integer(session_id) do
