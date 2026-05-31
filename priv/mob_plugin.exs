@@ -12,7 +12,9 @@
   android: %{
     permissions: [
       "android.permission.BLUETOOTH_CONNECT",
-      "android.permission.BLUETOOTH_SCAN"
+      "android.permission.BLUETOOTH_SCAN",
+      # Discovery (startDiscovery) returns scan results only with location access.
+      "android.permission.ACCESS_FINE_LOCATION"
     ],
     # Plain JNI-thunk C (Java_io_mob_bluetooth_*) compiled via
     # -Dplugin_jni_sources alongside beam_jni.c — holds the 25 nativeDeliverBt*
