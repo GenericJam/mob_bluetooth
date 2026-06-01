@@ -91,7 +91,6 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
   @JvmStatic external fun nativeDeliverBtHfpVendorAt(pid: Long, session: Int, cmd: String, cmdType: Int, args: String, address: String)
   @JvmStatic external fun nativeDeliverBtHfpScoStarted(pid: Long, session: Int, address: String)
   @JvmStatic external fun nativeDeliverBtHfpScoStopped(pid: Long, session: Int)
-  @JvmStatic external fun nativeDeliverBtHfpScoAudio(pid: Long, session: Int, pcm: ByteArray)
   @JvmStatic external fun nativeDeliverBtHfpError(pid: Long, session: Int, reason: String)
   @JvmStatic external fun nativeDeliverBtSppConnected(pid: Long, session: Int, address: String, name: String)
   @JvmStatic external fun nativeDeliverBtSppConnectFailed(pid: Long, address: String, reason: String)
@@ -99,11 +98,6 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
   @JvmStatic external fun nativeDeliverBtSppData(pid: Long, session: Int, data: ByteArray)
   @JvmStatic external fun nativeDeliverBtSppWritten(pid: Long, session: Int, size: Int)
   @JvmStatic external fun nativeDeliverBtSppError(pid: Long, session: Int, reason: String)
-  @JvmStatic external fun nativeDeliverBtHidConnected(pid: Long, session: Int, address: String)
-  @JvmStatic external fun nativeDeliverBtHidConnectFailed(pid: Long, address: String, reason: String)
-  @JvmStatic external fun nativeDeliverBtHidDisconnected(pid: Long, session: Int, reason: String)
-  @JvmStatic external fun nativeDeliverBtHidInput(pid: Long, session: Int, type: Int, code: Int, value: Int)
-  @JvmStatic external fun nativeDeliverBtHidRawReport(pid: Long, session: Int, report: ByteArray)
 
   // ── BT companion state ───────────────────────────────────────────────────
   private val btSessionMap = ConcurrentHashMap<Int, BluetoothDevice>()
@@ -505,11 +499,6 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
       }
   }
 
-  @JvmStatic
-  fun bt_hfp_send_audio(pid: Long, session: Int, bytes: ByteArray) {
-      nativeDeliverBtHfpError(pid, session, "unsupported")
-  }
-
   // ── SPP profile ────────────────────────────────────────────────────────
 
   @JvmStatic
@@ -572,18 +561,5 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
               nativeDeliverBtSppError(pid, session, "spp_write_failed")
           }
       }.start()
-  }
-
-  // ── HID profile (stubs) ────────────────────────────────────────────────
-
-  @JvmStatic
-  fun bt_hid_connect(pid: Long, json: String) {
-      val mac = try { JSONObject(json).optString("address") } catch (_: Exception) { "" }
-      nativeDeliverBtHidConnectFailed(pid, mac, "requires_input_method")
-  }
-
-  @JvmStatic
-  fun bt_hid_subscribe_raw(pid: Long, session: Int) {
-      nativeDeliverBtHidDisconnected(pid, session, "requires_input_method")
   }
 }

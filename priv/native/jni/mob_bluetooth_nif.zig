@@ -46,11 +46,8 @@ const BtMethods = struct {
     hfp_send_vendor_at: jni.JMethodID = null,
     hfp_start_sco: jni.JMethodID = null,
     hfp_stop_sco: jni.JMethodID = null,
-    hfp_send_audio: jni.JMethodID = null,
     spp_connect: jni.JMethodID = null,
     spp_write: jni.JMethodID = null,
-    hid_connect: jni.JMethodID = null,
-    hid_subscribe_raw: jni.JMethodID = null,
 };
 
 var g_bt: BtMethods = .{};
@@ -76,11 +73,8 @@ export fn Java_io_mob_bluetooth_MobBluetoothBridge_nativeRegister(jenv: *jni.JNI
     g_bt.hfp_send_vendor_at = jni.getStaticMethodID(jenv, cls, "bt_hfp_send_vendor_at", "(JILjava/lang/String;Ljava/lang/String;)V");
     g_bt.hfp_start_sco = jni.getStaticMethodID(jenv, cls, "bt_hfp_start_sco", "(JI)V");
     g_bt.hfp_stop_sco = jni.getStaticMethodID(jenv, cls, "bt_hfp_stop_sco", "(JI)V");
-    g_bt.hfp_send_audio = jni.getStaticMethodID(jenv, cls, "bt_hfp_send_audio", "(JI[B)V");
     g_bt.spp_connect = jni.getStaticMethodID(jenv, cls, "bt_spp_connect", "(JLjava/lang/String;)V");
     g_bt.spp_write = jni.getStaticMethodID(jenv, cls, "bt_spp_write", "(JI[B)V");
-    g_bt.hid_connect = jni.getStaticMethodID(jenv, cls, "bt_hid_connect", "(JLjava/lang/String;)V");
-    g_bt.hid_subscribe_raw = jni.getStaticMethodID(jenv, cls, "bt_hid_subscribe_raw", "(JI)V");
 }
 
 // ── Thread-attach helpers ────────────────────────────────────────────────
@@ -159,7 +153,6 @@ const MobBtAtoms = struct {
     bt: erts.ERL_NIF_TERM = 0,
     bt_hfp: erts.ERL_NIF_TERM = 0,
     bt_spp: erts.ERL_NIF_TERM = 0,
-    bt_hid: erts.ERL_NIF_TERM = 0,
 
     // Discovery / pairing tags
     discovery_started: erts.ERL_NIF_TERM = 0,
@@ -183,15 +176,10 @@ const MobBtAtoms = struct {
     vendor_at: erts.ERL_NIF_TERM = 0,
     sco_started: erts.ERL_NIF_TERM = 0,
     sco_stopped: erts.ERL_NIF_TERM = 0,
-    sco_audio: erts.ERL_NIF_TERM = 0,
 
     // SPP-specific
     data: erts.ERL_NIF_TERM = 0,
     written: erts.ERL_NIF_TERM = 0,
-
-    // HID-specific
-    input: erts.ERL_NIF_TERM = 0,
-    raw_report: erts.ERL_NIF_TERM = 0,
 
     // Map keys
     k_address: erts.ERL_NIF_TERM = 0,
@@ -202,9 +190,6 @@ const MobBtAtoms = struct {
     k_cmd_type: erts.ERL_NIF_TERM = 0,
     k_args: erts.ERL_NIF_TERM = 0,
     k_size: erts.ERL_NIF_TERM = 0,
-    k_type: erts.ERL_NIF_TERM = 0,
-    k_code: erts.ERL_NIF_TERM = 0,
-    k_value: erts.ERL_NIF_TERM = 0,
 
     // Constants
     nil_atom: erts.ERL_NIF_TERM = 0,
@@ -219,7 +204,6 @@ pub fn mobBtAtomsInit(env: ?*erts.ErlNifEnv) void {
     mob_bt_atoms.bt = erts.atom(env, "bt");
     mob_bt_atoms.bt_hfp = erts.atom(env, "bt_hfp");
     mob_bt_atoms.bt_spp = erts.atom(env, "bt_spp");
-    mob_bt_atoms.bt_hid = erts.atom(env, "bt_hid");
 
     mob_bt_atoms.discovery_started = erts.atom(env, "discovery_started");
     mob_bt_atoms.discovery_finished = erts.atom(env, "discovery_finished");
@@ -240,13 +224,9 @@ pub fn mobBtAtomsInit(env: ?*erts.ErlNifEnv) void {
     mob_bt_atoms.vendor_at = erts.atom(env, "vendor_at");
     mob_bt_atoms.sco_started = erts.atom(env, "sco_started");
     mob_bt_atoms.sco_stopped = erts.atom(env, "sco_stopped");
-    mob_bt_atoms.sco_audio = erts.atom(env, "sco_audio");
 
     mob_bt_atoms.data = erts.atom(env, "data");
     mob_bt_atoms.written = erts.atom(env, "written");
-
-    mob_bt_atoms.input = erts.atom(env, "input");
-    mob_bt_atoms.raw_report = erts.atom(env, "raw_report");
 
     mob_bt_atoms.k_address = erts.atom(env, "address");
     mob_bt_atoms.k_name = erts.atom(env, "name");
@@ -256,9 +236,6 @@ pub fn mobBtAtomsInit(env: ?*erts.ErlNifEnv) void {
     mob_bt_atoms.k_cmd_type = erts.atom(env, "cmd_type");
     mob_bt_atoms.k_args = erts.atom(env, "args");
     mob_bt_atoms.k_size = erts.atom(env, "size");
-    mob_bt_atoms.k_type = erts.atom(env, "type");
-    mob_bt_atoms.k_code = erts.atom(env, "code");
-    mob_bt_atoms.k_value = erts.atom(env, "value");
 
     mob_bt_atoms.nil_atom = erts.atom(env, "nil");
     mob_bt_atoms.true_atom = erts.atom(env, "true");
@@ -280,8 +257,7 @@ fn mobBtMakeBinaryStr(env: ?*erts.ErlNifEnv, s: ?[*:0]const u8) erts.ERL_NIF_TER
     return erts.enif_make_binary(env, &bin);
 }
 
-/// Build a binary term from arbitrary bytes (PCM audio, raw HID reports, SPP
-/// byte streams, etc).
+/// Build a binary term from arbitrary bytes (SPP byte streams, etc).
 fn mobBtMakeBinaryBytes(env: ?*erts.ErlNifEnv, bytes: ?[*]const u8, len: usize) erts.ERL_NIF_TERM {
     var bin: erts.ErlNifBinary = undefined;
     _ = erts.enif_alloc_binary(len, &bin);
@@ -368,21 +344,6 @@ fn mobBtMakeSizeMap(env: ?*erts.ErlNifEnv, size: c_int) erts.ERL_NIF_TERM {
     return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
 }
 
-/// Build `%{type: int, code: int, value: int}` for HID input events.
-/// Matches the Linux evdev struct input_event triple.
-fn mobBtMakeInputMap(env: ?*erts.ErlNifEnv, ev_type: c_int, code: c_int, value: c_int) erts.ERL_NIF_TERM {
-    const keys = [_]erts.ERL_NIF_TERM{
-        mob_bt_atoms.k_type,
-        mob_bt_atoms.k_code,
-        mob_bt_atoms.k_value,
-    };
-    const vals = [_]erts.ERL_NIF_TERM{
-        erts.enif_make_int(env, ev_type),
-        erts.enif_make_int(env, code),
-        erts.enif_make_int(env, value),
-    };
-    return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
-}
 
 // ═════════════════════════════════════════════════════════════════════════
 // Paired-list streaming accumulator
@@ -818,24 +779,6 @@ pub export fn mob_deliver_bt_hfp_sco_stopped(pid_long: jni.JLong, session: c_int
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
-pub export fn mob_deliver_bt_hfp_sco_audio(
-    pid_long: jni.JLong,
-    session: c_int,
-    pcm: ?[*]const u8,
-    len: usize,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hfp,
-        mob_bt_atoms.sco_audio,
-        erts.enif_make_int(env, session),
-        mobBtMakeBinaryBytes(env, pcm, len),
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
 pub export fn mob_deliver_bt_hfp_error(
     pid_long: jni.JLong,
     session: c_int,
@@ -955,96 +898,6 @@ pub export fn mob_deliver_bt_spp_error(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
-// ── HID profile deliveries ─────────────────────────────────────────────
-
-pub export fn mob_deliver_bt_hid_connected(
-    pid_long: jni.JLong,
-    session: c_int,
-    address: ?[*:0]const u8,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hid,
-        mob_bt_atoms.connected,
-        erts.enif_make_int(env, session),
-        mobBtMakeAddressOnly(env, address),
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
-pub export fn mob_deliver_bt_hid_connect_failed(
-    pid_long: jni.JLong,
-    address: ?[*:0]const u8,
-    reason: ?[*:0]const u8,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hid,
-        mob_bt_atoms.connect_failed,
-        mobBtMakeAddressReason(env, address, reason),
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
-pub export fn mob_deliver_bt_hid_disconnected(
-    pid_long: jni.JLong,
-    session: c_int,
-    reason_atom: ?[*:0]const u8,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const reason_term = if (reason_atom) |r| erts.enif_make_atom(env, r) else erts.atom(env, "unknown");
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hid,
-        mob_bt_atoms.disconnected,
-        erts.enif_make_int(env, session),
-        reason_term,
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
-pub export fn mob_deliver_bt_hid_input(
-    pid_long: jni.JLong,
-    session: c_int,
-    ev_type: c_int,
-    code: c_int,
-    value: c_int,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hid,
-        mob_bt_atoms.input,
-        erts.enif_make_int(env, session),
-        mobBtMakeInputMap(env, ev_type, code, value),
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
-pub export fn mob_deliver_bt_hid_raw_report(
-    pid_long: jni.JLong,
-    session: c_int,
-    bytes: ?[*]const u8,
-    len: usize,
-) callconv(.c) void {
-    var pid = pidFromLong(pid_long);
-    const env = erts.enif_alloc_env() orelse return;
-    defer erts.enif_free_env(env);
-    const msg = erts.makeTuple(env, .{
-        mob_bt_atoms.bt_hid,
-        mob_bt_atoms.raw_report,
-        erts.enif_make_int(env, session),
-        mobBtMakeBinaryBytes(env, bytes, len),
-    });
-    _ = erts.enif_send(null, &pid, env, msg);
-}
-
 // ═════════════════════════════════════════════════════════════════════════
 // NIF wrappers — `nif_bt_*`
 // ═════════════════════════════════════════════════════════════════════════
@@ -1138,7 +991,7 @@ export fn nif_bt_cancel_discovery(
     return erts.ok(env);
 }
 
-// ── JSON-arg NIFs (pair / unpair / hfp_connect / spp_connect / hid_connect) ──
+// ── JSON-arg NIFs (pair / unpair / hfp_connect / spp_connect) ──
 
 export fn nif_bt_pair(
     env: ?*erts.ErlNifEnv,
@@ -1198,21 +1051,6 @@ export fn nif_bt_spp_connect(
     var pid: erts.ErlNifPid = undefined;
     _ = erts.enif_self(env, &pid);
     return callBridgePidStr(env, g_bt.spp_connect, pid, json);
-}
-
-export fn nif_bt_hid_connect(
-    env: ?*erts.ErlNifEnv,
-    argc: c_int,
-    argv: [*]const erts.ERL_NIF_TERM,
-) callconv(.c) erts.ERL_NIF_TERM {
-    _ = argc;
-    if (g_bt.hid_connect == null) return btUnsupported(env);
-    const bin = getBinOrIolist(env, argv[0]) orelse return erts.badarg(env);
-    const json = binToCString(bin) orelse return erts.atom(env, "error");
-    defer freeCString(json);
-    var pid: erts.ErlNifPid = undefined;
-    _ = erts.enif_self(env, &pid);
-    return callBridgePidStr(env, g_bt.hid_connect, pid, json);
 }
 
 // ── Session-only NIFs ──
@@ -1328,32 +1166,6 @@ export fn nif_bt_hfp_stop_sco(
     return erts.ok(env);
 }
 
-export fn nif_bt_hid_subscribe_raw(
-    env: ?*erts.ErlNifEnv,
-    argc: c_int,
-    argv: [*]const erts.ERL_NIF_TERM,
-) callconv(.c) erts.ERL_NIF_TERM {
-    _ = argc;
-    if (g_bt.hid_subscribe_raw == null) return btUnsupported(env);
-    var session: c_int = 0;
-    if (erts.enif_get_int(env, argv[0], &session) == 0) return erts.badarg(env);
-    var pid: erts.ErlNifPid = undefined;
-    _ = erts.enif_self(env, &pid);
-
-    var attached: c_int = 0;
-    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
-    defer detachIfAttached(attached);
-
-    jenv.*.CallStaticVoidMethod.?(
-        jenv,
-        g_bt_cls,
-        g_bt.hid_subscribe_raw,
-        pidToJlong(pid),
-        @as(jni.JInt, session),
-    );
-    return erts.ok(env);
-}
-
 // ── Two-string + session NIF (hfp_send_vendor_at/3) ──
 
 export fn nif_bt_hfp_send_vendor_at(
@@ -1398,43 +1210,7 @@ export fn nif_bt_hfp_send_vendor_at(
     return erts.ok(env);
 }
 
-// ── Byte-array NIFs (hfp_send_audio/2, spp_write/2) — dirty IO ──
-
-export fn nif_bt_hfp_send_audio(
-    env: ?*erts.ErlNifEnv,
-    argc: c_int,
-    argv: [*]const erts.ERL_NIF_TERM,
-) callconv(.c) erts.ERL_NIF_TERM {
-    _ = argc;
-    if (g_bt.hfp_send_audio == null) return btUnsupported(env);
-
-    var session: c_int = 0;
-    if (erts.enif_get_int(env, argv[0], &session) == 0) return erts.badarg(env);
-    const bin = getBinOrIolist(env, argv[1]) orelse return erts.badarg(env);
-
-    var pid: erts.ErlNifPid = undefined;
-    _ = erts.enif_self(env, &pid);
-
-    var attached: c_int = 0;
-    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
-    defer detachIfAttached(attached);
-
-    const size: jni.JSize = @intCast(bin.size);
-    const jbytes = jni.newByteArray(jenv, size);
-    if (jbytes != null) {
-        jni.setByteArrayRegion(jenv, jbytes, 0, size, @ptrCast(bin.data));
-        jenv.*.CallStaticVoidMethod.?(
-            jenv,
-            g_bt_cls,
-            g_bt.hfp_send_audio,
-            pidToJlong(pid),
-            @as(jni.JInt, session),
-            jbytes,
-        );
-        jni.deleteLocalRef(jenv, jbytes);
-    }
-    return erts.ok(env);
-}
+// ── Byte-array NIF (spp_write/2) — dirty IO ──
 
 export fn nif_bt_spp_write(
     env: ?*erts.ErlNifEnv,
@@ -1496,11 +1272,8 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "bt_hfp_send_vendor_at", .arity = 3, .fptr = nif_bt_hfp_send_vendor_at, .flags = 0 },
     .{ .name = "bt_hfp_start_sco", .arity = 1, .fptr = nif_bt_hfp_start_sco, .flags = 0 },
     .{ .name = "bt_hfp_stop_sco", .arity = 1, .fptr = nif_bt_hfp_stop_sco, .flags = 0 },
-    .{ .name = "bt_hfp_send_audio", .arity = 2, .fptr = nif_bt_hfp_send_audio, .flags = erts.ERL_NIF_DIRTY_JOB_IO_BOUND },
     .{ .name = "bt_spp_connect", .arity = 1, .fptr = nif_bt_spp_connect, .flags = 0 },
     .{ .name = "bt_spp_write", .arity = 2, .fptr = nif_bt_spp_write, .flags = erts.ERL_NIF_DIRTY_JOB_IO_BOUND },
-    .{ .name = "bt_hid_connect", .arity = 1, .fptr = nif_bt_hid_connect, .flags = 0 },
-    .{ .name = "bt_hid_subscribe_raw", .arity = 1, .fptr = nif_bt_hid_subscribe_raw, .flags = 0 },
 };
 
 var nif_entry: erts.ErlNifEntry = .{
@@ -1514,7 +1287,7 @@ var nif_entry: erts.ErlNifEntry = .{
     .upgrade = null,
     .unload = null,
     .vm_variant = erts.ERL_NIF_VM_VARIANT,
-    .options = 1, // enable dirty-NIF support (send_audio / spp_write are dirty IO).
+    .options = 1, // enable dirty-NIF support (spp_write is dirty IO).
     .sizeof_ErlNifResourceTypeInit = erts.SIZEOF_ErlNifResourceTypeInit,
     .min_erts = erts.ERL_NIF_MIN_ERTS_VERSION,
 };

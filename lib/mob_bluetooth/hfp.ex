@@ -23,16 +23,12 @@ defmodule MobBluetooth.Hfp do
       socket = MobBluetooth.Hfp.subscribe_vendor_at(socket, session_id)
       # {:bt_hfp, :vendor_at, session_id, %{cmd: "+CTXD", args: ""}}
 
-      # 4. (Optional) bring up the SCO audio link.
+      # 4. (Optional) bring up the SCO audio link (audio then routes through
+      #    Android's normal in-call path; see "SCO audio" below).
       socket = MobBluetooth.Hfp.start_sco(socket, session_id)
-      # {:bt_hfp, :sco_started, session_id, payload}
-      # then audio chunks stream as:
-      # {:bt_hfp, :sco_audio, session_id, pcm_bytes}
+      # {:bt_hfp, :sco_started, session_id, %{address: ...}}
 
-      # 5. Send PCM audio out to the headset earpiece:
-      MobBluetooth.Hfp.send_audio(socket, session_id, pcm_bytes)
-
-      # 6. Disconnect (one canonical path — MobBluetooth.disconnect/2)
+      # 5. Disconnect (one canonical path — MobBluetooth.disconnect/2)
       MobBluetooth.disconnect(socket, session_id)
 
   ## Vendor AT commands
@@ -48,15 +44,22 @@ defmodule MobBluetooth.Hfp do
   use the `response` argument to override only when the AT spec demands
   custom payload.
 
-  ## SCO audio
+  ## SCO audio (link control only)
 
   SCO (Synchronous Connection-Oriented) is the real-time bidirectional
-  voice channel HFP uses for call audio. `start_sco/2` opens it; PCM
-  bytes flow both ways until `stop_sco/2` or disconnect.
+  voice channel HFP uses for call audio. `start_sco/2` brings the link up
+  (via `startScoUsingVirtualVoiceCall` + `MODE_IN_COMMUNICATION`) and
+  `stop_sco/2` tears it down.
 
-  Format is 8 kHz / 16-bit / mono PCM by default; modern devices may
-  negotiate up to 16 kHz wideband (mSBC). The `:sco_started` event
-  reports the negotiated parameters.
+  > #### Audio is not streamed through events {: .info}
+  >
+  > Once the SCO link is up, audio flows through Android's normal in-call
+  > audio routing (the headset becomes the active mic/speaker). Raw PCM is
+  > **not** delivered to the BEAM as events, and the codec parameters
+  > (sample rate / mSBC vs CVSD) are not surfaced — `:sco_started` carries
+  > only the device address. Forwarding PCM frames as `{:bt_hfp, :sco_audio,
+  > ...}` events would be net-new work; it has never been implemented (true
+  > in mob core as well).
   """
 
   alias MobBluetooth
@@ -148,9 +151,10 @@ defmodule MobBluetooth.Hfp do
   @doc """
   Open the SCO audio link for this HFP session.
 
-  Emits `{:bt_hfp, :sco_started, session_id, payload}` when the link is up.
-  Mic audio then streams as `{:bt_hfp, :sco_audio, session_id, pcm_bytes}`
-  (a binary). On failure: `{:bt_hfp, :error, session_id, reason}`.
+  Emits `{:bt_hfp, :sco_started, session_id, %{address: String.t()}}` when the
+  link is up; on failure `{:bt_hfp, :error, session_id, reason}`. Audio then
+  routes through Android's normal in-call path — PCM is not delivered as
+  events (see the "SCO audio" section in the module doc).
   """
   @spec start_sco(socket :: term(), MobBluetooth.session_id()) :: term()
   def start_sco(socket, session_id) when is_integer(session_id) do
@@ -173,25 +177,6 @@ defmodule MobBluetooth.Hfp do
       {:error, :unsupported}
     else
       :mob_bluetooth_nif.bt_hfp_stop_sco(session_id)
-      socket
-    end
-  end
-
-  @doc """
-  Send PCM audio bytes out the SCO link to the headset earpiece.
-
-  Bytes are linear PCM matching the format reported in `:sco_started`
-  (typically 8 kHz / 16-bit / mono signed little-endian).
-
-  Returns the socket. This is fire-and-forget; no completion event.
-  """
-  @spec send_audio(socket :: term(), MobBluetooth.session_id(), binary()) :: term()
-  def send_audio(socket, session_id, pcm_bytes)
-      when is_integer(session_id) and is_binary(pcm_bytes) do
-    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
-      {:error, :unsupported}
-    else
-      :mob_bluetooth_nif.bt_hfp_send_audio(session_id, pcm_bytes)
       socket
     end
   end

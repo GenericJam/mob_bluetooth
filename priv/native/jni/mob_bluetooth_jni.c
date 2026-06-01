@@ -50,7 +50,6 @@ void mob_deliver_bt_hfp_vendor_at(jlong pid, int session, const char *cmd, int c
                                   const char *args, const char *address);
 void mob_deliver_bt_hfp_sco_started(jlong pid, int session, const char *address);
 void mob_deliver_bt_hfp_sco_stopped(jlong pid, int session);
-void mob_deliver_bt_hfp_sco_audio(jlong pid, int session, const char *pcm, size_t len);
 void mob_deliver_bt_hfp_error(jlong pid, int session, const char *reason);
 
 // SPP profile
@@ -60,13 +59,6 @@ void mob_deliver_bt_spp_disconnected(jlong pid, int session, const char *reason_
 void mob_deliver_bt_spp_data(jlong pid, int session, const char *bytes, size_t len);
 void mob_deliver_bt_spp_written(jlong pid, int session, int size);
 void mob_deliver_bt_spp_error(jlong pid, int session, const char *reason);
-
-// HID profile
-void mob_deliver_bt_hid_connected(jlong pid, int session, const char *address);
-void mob_deliver_bt_hid_connect_failed(jlong pid, const char *address, const char *reason);
-void mob_deliver_bt_hid_disconnected(jlong pid, int session, const char *reason_atom);
-void mob_deliver_bt_hid_input(jlong pid, int session, int type, int code, int value);
-void mob_deliver_bt_hid_raw_report(jlong pid, int session, const char *bytes, size_t len);
 
 // ── Bluetooth Classic (Mob.Bt suite) — JNI thunks ───────────────────────
 // Each thunk unmarshals Java args into C primitives, calls the matching
@@ -233,15 +225,6 @@ Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHfpScoStopped(JNIEnv* en
 }
 
 JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHfpScoAudio(JNIEnv* env, jclass cls,
-    jlong pid, jint session, jbyteArray pcm) {
-    jsize len = (*env)->GetArrayLength(env, pcm);
-    jbyte* buf = (*env)->GetByteArrayElements(env, pcm, NULL);
-    mob_deliver_bt_hfp_sco_audio(pid, (int)session, (const char*)buf, (size_t)len);
-    (*env)->ReleaseByteArrayElements(env, pcm, buf, JNI_ABORT);
-}
-
-JNIEXPORT void JNICALL
 Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHfpError(JNIEnv* env, jclass cls,
     jlong pid, jint session, jstring reason) {
     const char* c_reason = (*env)->GetStringUTFChars(env, reason, NULL);
@@ -302,45 +285,3 @@ Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtSppError(JNIEnv* env, jc
     (*env)->ReleaseStringUTFChars(env, reason, c_reason);
 }
 
-// ── HID profile ────────────────────────────────────────────────────────
-
-JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHidConnected(JNIEnv* env, jclass cls,
-    jlong pid, jint session, jstring address) {
-    const char* c_address = (*env)->GetStringUTFChars(env, address, NULL);
-    mob_deliver_bt_hid_connected(pid, (int)session, c_address);
-    (*env)->ReleaseStringUTFChars(env, address, c_address);
-}
-
-JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHidConnectFailed(JNIEnv* env, jclass cls,
-    jlong pid, jstring address, jstring reason) {
-    const char* c_address = (*env)->GetStringUTFChars(env, address, NULL);
-    const char* c_reason  = (*env)->GetStringUTFChars(env, reason,  NULL);
-    mob_deliver_bt_hid_connect_failed(pid, c_address, c_reason);
-    (*env)->ReleaseStringUTFChars(env, address, c_address);
-    (*env)->ReleaseStringUTFChars(env, reason,  c_reason);
-}
-
-JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHidDisconnected(JNIEnv* env, jclass cls,
-    jlong pid, jint session, jstring reason) {
-    const char* c_reason = (*env)->GetStringUTFChars(env, reason, NULL);
-    mob_deliver_bt_hid_disconnected(pid, (int)session, c_reason);
-    (*env)->ReleaseStringUTFChars(env, reason, c_reason);
-}
-
-JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHidInput(JNIEnv* env, jclass cls,
-    jlong pid, jint session, jint type, jint code, jint value) {
-    mob_deliver_bt_hid_input(pid, (int)session, (int)type, (int)code, (int)value);
-}
-
-JNIEXPORT void JNICALL
-Java_io_mob_bluetooth_MobBluetoothBridge_nativeDeliverBtHidRawReport(JNIEnv* env, jclass cls,
-    jlong pid, jint session, jbyteArray report) {
-    jsize len = (*env)->GetArrayLength(env, report);
-    jbyte* buf = (*env)->GetByteArrayElements(env, report, NULL);
-    mob_deliver_bt_hid_raw_report(pid, (int)session, (const char*)buf, (size_t)len);
-    (*env)->ReleaseByteArrayElements(env, report, buf, JNI_ABORT);
-}

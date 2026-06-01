@@ -10,8 +10,9 @@ defmodule MobBluetooth do
     * `MobBluetooth.Spp` — Serial Port Profile (RFCOMM byte streams).
       Use this for legacy serial-over-Bluetooth devices (Arduino HC-05,
       OBD-II readers, marine GPS, industrial sensors).
-    * `MobBluetooth.Hid` — Human Interface Device (input reports).
-      Use this for Bluetooth keyboards, mice, gamepads, finger PTTs.
+
+  (HID is not supported on Android — receiving HID input requires
+  input-method/HID-host privileges Android denies ordinary apps.)
 
   ## API style
 
@@ -31,9 +32,9 @@ defmodule MobBluetooth do
       {:bt, :paired_list, [device]}
       {:bt, :error, payload}
 
-  **Profile events** are tagged by profile (`:bt_hfp`, `:bt_spp`,
-  `:bt_hid`) — not `:bt`. Once a session exists they carry its integer
-  `session_id` as the third element; pre-session failures omit it:
+  **Profile events** are tagged by profile (`:bt_hfp`, `:bt_spp`) — not
+  `:bt`. Once a session exists they carry its integer `session_id` as the
+  third element; pre-session failures omit it:
 
       {:bt_hfp, :connected, session_id, payload}     # 4-tuple, has session
       {:bt_hfp, :connect_failed, %{address: addr, reason: atom}}  # 3-tuple, no session yet
@@ -186,14 +187,13 @@ defmodule MobBluetooth do
   @doc """
   Disconnect a profile session by `session_id`.
 
-  Works for any profile (`MobBluetooth.Hfp`, `MobBluetooth.Spp`, `MobBluetooth.Hid`) — the
+  Works for any profile (`MobBluetooth.Hfp`, `MobBluetooth.Spp`) — the
   framework dispatches internally based on which profile owns the session.
 
   Emits a profile-specific disconnect event:
 
     * `{:bt_hfp, :disconnected, session_id, reason}`
     * `{:bt_spp, :disconnected, session_id, reason}`
-    * `{:bt_hid, :disconnected, session_id, reason}`
   """
   @spec disconnect(socket :: term(), session_id()) :: term()
   def disconnect(socket, session_id) when is_integer(session_id) do

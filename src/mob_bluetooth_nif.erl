@@ -18,11 +18,8 @@
     bt_hfp_send_vendor_at/3,
     bt_hfp_start_sco/1,
     bt_hfp_stop_sco/1,
-    bt_hfp_send_audio/2,
     bt_spp_connect/1,
-    bt_spp_write/2,
-    bt_hid_connect/1,
-    bt_hid_subscribe_raw/1
+    bt_spp_write/2
 ]).
 -on_load(init/0).
 
@@ -65,17 +62,8 @@ bt_hfp_start_sco(_Session) ->
 bt_hfp_stop_sco(_Session) ->
     erlang:nif_error(nif_not_loaded).
 
-bt_hfp_send_audio(_Session, _Pcm) ->
-    erlang:nif_error(nif_not_loaded).
-
 bt_spp_connect(_Json) ->
     erlang:nif_error(nif_not_loaded).
 
 bt_spp_write(_Session, _Bytes) ->
-    erlang:nif_error(nif_not_loaded).
-
-bt_hid_connect(_Json) ->
-    erlang:nif_error(nif_not_loaded).
-
-bt_hid_subscribe_raw(_Session) ->
     erlang:nif_error(nif_not_loaded).

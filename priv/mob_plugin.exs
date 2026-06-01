@@ -2,7 +2,7 @@
   name: :mob_bluetooth,
   mob_version: "~> 0.6",
   plugin_spec_version: 1,
-  description: "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP/HID/SPP profiles",
+  description: "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP profiles",
   nifs: [
     # lang: :zig routes this through -Dplugin_zig_nifs + addZigObject. :module
     # is the C/Erlang NIF name; the source's `mob_bluetooth_nif_nif_init` export
