@@ -8,7 +8,7 @@
 // shippable (they live in the sibling mob_bluetooth_jni.c).
 //
 // Registration: mob_dev copies this file into the app Kotlin sourceSet at build
-// time and generates `MobPluginBootstrap.registerAll()` (called from
+// time and generates `MobPluginBootstrap.registerAll(activity)` (called from
 // MainActivity.onCreate) which invokes `register()`. `register()` calls the
 // `nativeRegister` thunk (in the zig NIF), which receives THIS class as its
 // `cls` arg and caches the jclass + bt_* method ids — no FindClass, no
@@ -16,13 +16,13 @@
 // these methods' inbound nativeDeliverBt* externs resolve to the plugin's own
 // JNI thunks.
 //
-// NOTE (activity access): the bt methods need an Android Activity. mob-core's
+// Activity access: the bt methods need an Android Activity. mob-core's
 // MobBridge holds a private `activityRef` set from `init(activity)`. This
 // plugin class can't see that private field (different package), so it keeps
-// its OWN `activityRef`, set via `setActivity(activity)`. Wiring the host to
-// call `MobBluetoothBridge.setActivity(...)` at startup is a mob_dev
-// build-pipeline concern (out of scope for this extraction). See the session
-// report — this is the one open integration seam.
+// its OWN `activityRef`. It opts into the generic handoff by implementing
+// `io.mob.plugin.MobActivityAware`; the generated bootstrap calls
+// `setActivity(activity)` right after `register()`. No plugin-specific wiring
+// in the host (see mob_dev decisions/2026-05-31-plugin-activity-handoff.md).
 package io.mob.bluetooth
 
 import android.app.Activity
@@ -45,7 +45,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
-object MobBluetoothBridge {
+object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
 
   // ── Bridge-class registration (caches this jclass + bt_* method ids) ─────
   @JvmStatic external fun nativeRegister()
@@ -58,9 +58,16 @@ object MobBluetoothBridge {
   // ── Activity reference (see NOTE in the file header) ─────────────────────
   private var activityRef: WeakReference<Activity>? = null
 
-  /** Host calls this at startup to supply the Activity bt operations need. */
-  @JvmStatic
-  fun setActivity(activity: Activity) {
+  /**
+   * Supplied by the generated MobPluginBootstrap.registerAll(activity) at
+   * startup (MobActivityAware contract). Held weakly to avoid leaking the
+   * Activity across its lifecycle.
+   */
+  // Not @JvmStatic: it overrides MobActivityAware.setActivity, and @JvmStatic
+  // is illegal on an interface override in an object. Called via the interface
+  // (instance dispatch) from the generated bootstrap's handOff, so no static
+  // accessor is needed.
+  override fun setActivity(activity: Activity) {
     activityRef = WeakReference(activity)
   }
 
