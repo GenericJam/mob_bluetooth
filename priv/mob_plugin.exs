@@ -9,6 +9,14 @@
     # is the static init symbol the generated driver table references.
     %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig}
   ],
+  # Runtime permission capability — Android-only (BT Classic is unsupported on
+  # iOS, so no ios handler). The Android bridge's MobPermissionProvider maps
+  # :bluetooth_connect to the whole Nearby-devices group (SCAN/CONNECT/ADVERTISE);
+  # core's request_permission consults it so Mob.Permissions.request(socket,
+  # :bluetooth_connect) shows the runtime dialog and grants the group.
+  permissions: [
+    %{capability: :bluetooth_connect}
+  ],
   android: %{
     permissions: [
       "android.permission.BLUETOOTH_CONNECT",

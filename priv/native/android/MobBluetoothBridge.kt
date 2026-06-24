@@ -45,7 +45,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
-object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
+object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermissionProvider {
 
   // ── Bridge-class registration (caches this jclass + bt_* method ids) ─────
   @JvmStatic external fun nativeRegister()
@@ -70,6 +70,22 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
   override fun setActivity(activity: Activity) {
     activityRef = WeakReference(activity)
   }
+
+  // MobPermissionProvider: route the :bluetooth_connect capability to the whole
+  // Android 12+ "Nearby devices" runtime group, so one Mob.Permissions.request
+  // grants SCAN + CONNECT + ADVERTISE together (discovery, pairing, and
+  // make_discoverable all need them). The generated MobPluginBootstrap records
+  // this provider at registerAll; core's request_permission consults it.
+  override fun permissionsFor(cap: String): Array<String>? =
+      if (cap == "bluetooth_connect") {
+        arrayOf(
+          android.Manifest.permission.BLUETOOTH_CONNECT,
+          android.Manifest.permission.BLUETOOTH_SCAN,
+          android.Manifest.permission.BLUETOOTH_ADVERTISE,
+        )
+      } else {
+        null
+      }
 
   // ── Mob.Bt — typed delivery externs (resolve to mob_bluetooth_jni.c) ─────
   @JvmStatic external fun nativeDeliverBtDiscoveryStarted(pid: Long)
