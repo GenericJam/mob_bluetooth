@@ -53,10 +53,17 @@ defmodule MobBluetooth do
 
   ## iOS
 
-  Bluetooth Classic on iOS requires Apple's MFi (Made for iPhone)
-  certification — a paid, NDA-gated program. MobBluetooth is **Android-only**.
-  All functions return `{:error, :unsupported}` synchronously on iOS.
-  For iOS-equivalent custom-hardware connectivity, use `Mob.Ble`.
+  Bluetooth **Classic** on iOS requires Apple's MFi (Made for iPhone)
+  certification — a paid, NDA-gated program — so the classic surface above
+  (discovery, pairing, HFP, SPP) is **Android-only**: those functions return
+  `{:error, :unsupported}` synchronously on iOS.
+
+  iOS does expose **BLE** through CoreBluetooth, a separate, parallel protocol
+  (a classic headset won't appear in a BLE scan, and vice versa). The `ble_*`
+  functions — `ble_scan/1`, `ble_stop_scan/1`, `ble_advertise/2`,
+  `ble_stop_advertise/1` — are **iOS-only** (they return `{:error, :unsupported}`
+  on Android, which has no BLE surface in this plugin yet) and need a real radio,
+  so they do nothing on the iOS Simulator.
 
   ## Pairing flow
 
@@ -238,6 +245,97 @@ defmodule MobBluetooth do
     else
       :mob_bluetooth_nif.bt_disconnect(session_id)
       socket
+    end
+  end
+
+  # ── BLE (CoreBluetooth) — iOS only ────────────────────────────────────────
+  # A separate, parallel surface from the classic bt_* functions above. iOS has
+  # no public classic-BT API; BLE is what CoreBluetooth exposes. Each ble_*
+  # function returns `{:error, :unsupported}` off iOS (no Android BLE yet).
+
+  @default_advertise_name "Mob"
+
+  @doc """
+  Scan for nearby BLE peripherals (iOS / CoreBluetooth).
+
+  Emits, to the calling process (same `:bt` device-event family as classic
+  discovery):
+
+    * `{:bt, :ble_scan_started}`
+    * `{:bt, :ble_device, %{id: uuid, name: name | nil, rssi: integer}}`
+      (once per advertisement seen)
+    * `{:bt, :error, %{reason: atom}}` if the radio is off/unauthorized.
+
+  iOS only — `{:error, :unsupported}` elsewhere. BLE needs a real radio, so it
+  does nothing on the iOS Simulator.
+  """
+  @spec ble_scan(socket :: term()) :: term()
+  def ble_scan(socket) do
+    if MobBluetooth.Platform.ble_unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.ble_scan()
+      socket
+    end
+  end
+
+  @doc """
+  Stop a BLE scan. Emits `{:bt, :ble_scan_stopped}`. iOS only.
+  """
+  @spec ble_stop_scan(socket :: term()) :: term()
+  def ble_stop_scan(socket) do
+    if MobBluetooth.Platform.ble_unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.ble_stop_scan()
+      socket
+    end
+  end
+
+  @doc """
+  Advertise this device as a BLE peripheral with a local `:name`
+  (default #{inspect(@default_advertise_name)}) — the BLE analog of
+  `make_discoverable/2`.
+
+  Emits `{:bt, :ble_advertising}` once advertising starts, or
+  `{:bt, :error, %{reason: atom}}`. iOS only — `{:error, :unsupported}`
+  elsewhere.
+  """
+  @spec ble_advertise(socket :: term(), keyword()) :: term()
+  def ble_advertise(socket, opts \\ []) do
+    if MobBluetooth.Platform.ble_unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.ble_advertise(advertise_name(opts))
+      socket
+    end
+  end
+
+  @doc """
+  Stop BLE advertising. Emits `{:bt, :ble_advertise_stopped}`. iOS only.
+  """
+  @spec ble_stop_advertise(socket :: term()) :: term()
+  def ble_stop_advertise(socket) do
+    if MobBluetooth.Platform.ble_unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.ble_stop_advertise()
+      socket
+    end
+  end
+
+  @doc false
+  # Normalise the advertised `:name` to a non-empty binary, falling back to the
+  # default for a missing/blank/non-binary value. Pure, so it's unit-testable
+  # without the device NIF.
+  @spec advertise_name(keyword()) :: binary()
+  def advertise_name(opts) do
+    case Keyword.get(opts, :name, @default_advertise_name) do
+      name when is_binary(name) ->
+        if String.trim(name) == "", do: @default_advertise_name, else: name
+
+      _ ->
+        @default_advertise_name
     end
   end
 

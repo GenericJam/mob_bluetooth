@@ -20,7 +20,15 @@
     bt_hfp_start_sco/1,
     bt_hfp_stop_sco/1,
     bt_spp_connect/1,
-    bt_spp_write/2
+    bt_spp_write/2,
+    %% BLE (iOS / CoreBluetooth). Android provides the classic bt_* NIFs above
+    %% and not these; iOS provides these and not the bt_* classic ones. The
+    %% Elixir layer gates each set to its platform, so the other platform's
+    %% functions are never called (they stay nif_error stubs here).
+    ble_scan/0,
+    ble_stop_scan/0,
+    ble_advertise/1,
+    ble_stop_advertise/0
 ]).
 -on_load(init/0).
 
@@ -70,4 +78,16 @@ bt_spp_connect(_Json) ->
     erlang:nif_error(nif_not_loaded).
 
 bt_spp_write(_Session, _Bytes) ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_scan() ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_stop_scan() ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_advertise(_Name) ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_stop_advertise() ->
     erlang:nif_error(nif_not_loaded).

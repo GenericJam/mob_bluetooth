@@ -4,10 +4,17 @@
   plugin_spec_version: 1,
   description: "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP profiles",
   nifs: [
-    # lang: :zig routes this through -Dplugin_zig_nifs + addZigObject. :module
-    # is the C/Erlang NIF name; the source's `mob_bluetooth_nif_nif_init` export
-    # is the static init symbol the generated driver table references.
-    %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig}
+    # Android: lang: :zig routes this through -Dplugin_zig_nifs + addZigObject.
+    # :module is the C/Erlang NIF name; the source's `mob_bluetooth_nif_nif_init`
+    # export is the static init symbol the generated driver table references.
+    # platform: :android so it isn't pulled into the iOS build.
+    %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android},
+    # iOS: the same NIF module name, but the ObjC CoreBluetooth implementation
+    # (ble_* — a BLE surface; iOS has no classic-BT API). platform: :ios so the
+    # Android build skips it. The two share the Erlang stub module
+    # (src/mob_bluetooth_nif.erl); each platform's NIF provides only its own
+    # functions and the Elixir layer gates calls per platform.
+    %{module: :mob_bluetooth_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios}
   ],
   # Runtime permission capability — Android-only (BT Classic is unsupported on
   # iOS, so no ios handler). The Android bridge's MobPermissionProvider maps
@@ -39,9 +46,12 @@
     bridge_class: "io.mob.bluetooth.MobBluetoothBridge"
   },
   ios: %{
+    # CoreBluetooth for the ble_* surface (CBCentralManager scan +
+    # CBPeripheralManager advertise).
+    frameworks: ["CoreBluetooth"],
     plist_keys: %{
       NSBluetoothAlwaysUsageDescription:
-        "Bluetooth access is required to discover and pair external devices."
+        "Bluetooth access is required to discover and advertise to nearby devices."
     }
   }
 }

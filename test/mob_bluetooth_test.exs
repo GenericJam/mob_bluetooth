@@ -127,5 +127,69 @@ defmodule MobBluetoothTest do
     end
   end
 
+  describe "iOS BLE surface (CoreBluetooth)" do
+    test "MobBluetooth exports the ble_* API" do
+      fns = MobBluetooth.__info__(:functions)
+      assert {:ble_scan, 1} in fns
+      assert {:ble_stop_scan, 1} in fns
+      assert {:ble_advertise, 2} in fns
+      assert {:ble_stop_advertise, 1} in fns
+    end
+
+    test "advertise_name/1 defaults to \"Mob\" when no :name is given" do
+      assert MobBluetooth.advertise_name([]) == "Mob"
+    end
+
+    test "advertise_name/1 passes a non-blank binary through" do
+      assert MobBluetooth.advertise_name(name: "Sensor 1") == "Sensor 1"
+    end
+
+    test "advertise_name/1 falls back to the default for blank/non-binary input" do
+      assert MobBluetooth.advertise_name(name: "   ") == "Mob"
+      assert MobBluetooth.advertise_name(name: "") == "Mob"
+      assert MobBluetooth.advertise_name(name: nil) == "Mob"
+      assert MobBluetooth.advertise_name(name: 42) == "Mob"
+    end
+
+    test "Platform.ble_unsupported?/1 is the inverse of classic — iOS-only" do
+      refute MobBluetooth.Platform.ble_unsupported?(:ios)
+      assert MobBluetooth.Platform.ble_unsupported?(:android)
+      assert MobBluetooth.Platform.ble_unsupported?(:host)
+      # classic is the opposite asymmetry: iOS-unsupported.
+      assert MobBluetooth.Platform.unsupported?(:ios)
+      refute MobBluetooth.Platform.unsupported?(:android)
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the NIF stub exports the ble_* functions and is nif_not_loaded on host" do
+      exports = :mob_bluetooth_nif.module_info(:exports)
+      assert {:ble_scan, 0} in exports
+      assert {:ble_stop_scan, 0} in exports
+      assert {:ble_advertise, 1} in exports
+      assert {:ble_stop_advertise, 0} in exports
+
+      assert_raise ErlangError, ~r/nif_not_loaded/, fn -> :mob_bluetooth_nif.ble_scan() end
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the manifest ships an iOS objc NIF + the CoreBluetooth framework" do
+      manifest = File.read!(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
+      assert manifest =~ ~s(native_dir: "priv/native/ios", lang: :objc, platform: :ios)
+      assert manifest =~ ~s("CoreBluetooth")
+      # the Android NIF must now be explicitly platform-gated too.
+      assert manifest =~ ~s(lang: :zig, platform: :android)
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the iOS NIF uses CoreBluetooth scan + advertise and the :bt event family" do
+      src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_bluetooth_nif.m"))
+      assert src =~ "#import <CoreBluetooth/CoreBluetooth.h>"
+      assert src =~ "scanForPeripheralsWithServices"
+      assert src =~ "startAdvertising"
+      assert src =~ "ble_device"
+      assert src =~ ~s(ERL_NIF_INIT(mob_bluetooth_nif)
+    end
+  end
+
   defp decoded(json) when is_binary(json), do: :json.decode(json)
 end

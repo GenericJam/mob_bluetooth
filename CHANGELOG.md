@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.2.0] - 2026-06-24
+
+### Added
+- **iOS BLE surface (CoreBluetooth).** iOS has no public Bluetooth Classic API,
+  so the existing `bt_*` surface (discovery, pairing, HFP, SPP) stays
+  Android-only. This adds a separate, parallel **BLE** capability via
+  CoreBluetooth, available on iOS:
+  - `ble_scan/1` / `ble_stop_scan/1` — scan for nearby BLE peripherals
+    (`CBCentralManager`), emitting `{:bt, :ble_scan_started}` and
+    `{:bt, :ble_device, %{id, name, rssi}}` per advertisement.
+  - `ble_advertise/2` / `ble_stop_advertise/1` — advertise this device as a BLE
+    peripheral (`CBPeripheralManager`), emitting `{:bt, :ble_advertising}`.
+
+  iOS-only (returns `{:error, :unsupported}` on Android, which has no BLE surface
+  in this plugin yet), and needs a real radio, so it does nothing on the iOS
+  Simulator. Ships an ObjC NIF (`priv/native/ios/mob_bluetooth_nif.m`) +
+  the `CoreBluetooth` framework; events reuse the existing `:bt` device-event
+  family. **Device-verified on a physical iPhone SE** (3rd gen): `ble_scan`
+  returned real nearby peripherals with RSSI and `ble_advertise` started
+  advertising.
+
+---
+
 ## [0.1.3] - 2026-06-24
 
 ### Added
