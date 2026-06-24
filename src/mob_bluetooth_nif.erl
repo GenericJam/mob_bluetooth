@@ -25,7 +25,7 @@
     %% and not these; iOS provides these and not the bt_* classic ones. The
     %% Elixir layer gates each set to its platform, so the other platform's
     %% functions are never called (they stay nif_error stubs here).
-    ble_scan/0,
+    ble_scan/1,
     ble_stop_scan/0,
     ble_advertise/1,
     ble_stop_advertise/0
@@ -80,7 +80,7 @@ bt_spp_connect(_Json) ->
 bt_spp_write(_Session, _Bytes) ->
     erlang:nif_error(nif_not_loaded).
 
-ble_scan() ->
+ble_scan(_ServiceUuids) ->
     erlang:nif_error(nif_not_loaded).
 
 ble_stop_scan() ->

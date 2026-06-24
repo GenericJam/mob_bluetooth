@@ -51,7 +51,15 @@
     frameworks: ["CoreBluetooth"],
     plist_keys: %{
       NSBluetoothAlwaysUsageDescription:
-        "Bluetooth access is required to discover and advertise to nearby devices."
+        "Bluetooth access is required to discover and advertise to nearby devices.",
+      # Background BLE: bluetooth-central keeps scanning/connecting alive,
+      # bluetooth-peripheral keeps advertising alive, when the app is
+      # backgrounded. Array-MERGED into the host Info.plist by mob_dev >= 0.6.16
+      # (so it composes with e.g. mob_background's `audio` entry). Background
+      # scanning additionally requires a :service_uuids filter on ble_scan/2.
+      # If Apple flags an unused mode at review, drop whichever of central/
+      # peripheral this app does not use.
+      UIBackgroundModes: ["bluetooth-central", "bluetooth-peripheral"]
     }
   }
 }

@@ -5,7 +5,9 @@
  * offer is BLE via CoreBluetooth, a separate, parallel surface. This NIF
  * implements the iOS-only `ble_*` functions:
  *
- *   ble_scan/0           — CBCentralManager scan for nearby BLE peripherals
+ *   ble_scan/1           — CBCentralManager scan for nearby BLE peripherals,
+ *                          filtered by a list of service-UUID binaries ([] =
+ *                          unfiltered; a filter is required for background scan)
  *   ble_stop_scan/0      — stop the scan
  *   ble_advertise/1      — CBPeripheralManager advertise a local name (the
  *                          BLE analog of Android's make_discoverable)
@@ -110,6 +112,10 @@ static const char *ble_state_reason(CBManagerState s) {
 @property(nonatomic, assign) BOOL haveScanPid;
 @property(nonatomic, assign) ErlNifPid advPid;
 @property(nonatomic, assign) BOOL haveAdvPid;
+// CBUUIDs to filter the scan by (nil = scan for everything). iOS REQUIRES an
+// explicit service-UUID filter for background scanning — `nil` is silently
+// dropped when the app is backgrounded.
+@property(nonatomic, strong) NSArray *scanServiceUUIDs;
 - (void)startScanIfReady;
 - (void)startAdvertiseIfReady;
 @end
@@ -131,7 +137,9 @@ static MobBle *ble_get(void) {
 
 - (void)startScanIfReady {
   if (self.wantScan && self.central.state == CBManagerStatePoweredOn) {
-    [self.central scanForPeripheralsWithServices:nil options:nil];
+    // self.scanServiceUUIDs is nil for an unfiltered (foreground) scan, or the
+    // caller's CBUUID list — required for background scanning.
+    [self.central scanForPeripheralsWithServices:self.scanServiceUUIDs options:nil];
     if (self.haveScanPid) ble_send_simple(&self->_scanPid, "ble_scan_started");
   }
 }
@@ -186,9 +194,30 @@ static MobBle *ble_get(void) {
 
 // ── NIFs ──────────────────────────────────────────────────────────────────
 
+// ble_scan(ServiceUUIDs) — ServiceUUIDs is a (possibly empty) list of UUID
+// binaries. Empty list scans for everything (foreground only); a non-empty
+// filter is what makes background scanning work (iOS drops a nil filter when
+// backgrounded). Unparseable UUID strings are skipped.
 static ERL_NIF_TERM nif_ble_scan(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
   (void)argc;
-  (void)argv;
+  NSMutableArray *uuids = [NSMutableArray array];
+  ERL_NIF_TERM head, tail = argv[0];
+  while (enif_get_list_cell(env, tail, &head, &tail)) {
+    ErlNifBinary bin;
+    if (enif_inspect_binary(env, head, &bin) ||
+        enif_inspect_iolist_as_binary(env, head, &bin)) {
+      NSString *s = [[NSString alloc] initWithBytes:bin.data
+                                             length:bin.size
+                                           encoding:NSUTF8StringEncoding];
+      @try {
+        if (s) [uuids addObject:[CBUUID UUIDWithString:s]];
+      } @catch (NSException *e) {
+        // Skip an invalid UUID string rather than crash the scan.
+      }
+    }
+  }
+  NSArray *filter = uuids.count ? [uuids copy] : nil;
+
   MobBle *b = ble_get();
   ErlNifPid pid;
   enif_self(env, &pid);
@@ -196,6 +225,7 @@ static ERL_NIF_TERM nif_ble_scan(ErlNifEnv *env, int argc, const ERL_NIF_TERM ar
     b.scanPid = pid;
     b.haveScanPid = YES;
     b.wantScan = YES;
+    b.scanServiceUUIDs = filter;
     if (!b.central)
       b.central = [[CBCentralManager alloc] initWithDelegate:b queue:b.q];
     [b startScanIfReady];
@@ -257,7 +287,7 @@ static ERL_NIF_TERM nif_ble_stop_advertise(ErlNifEnv *env, int argc, const ERL_N
 
 // ── Registration ──────────────────────────────────────────────────────────
 static ErlNifFunc nif_funcs[] = {
-    {"ble_scan", 0, nif_ble_scan, 0},
+    {"ble_scan", 1, nif_ble_scan, 0},
     {"ble_stop_scan", 0, nif_ble_stop_scan, 0},
     {"ble_advertise", 1, nif_ble_advertise, 0},
     {"ble_stop_advertise", 0, nif_ble_stop_advertise, 0},

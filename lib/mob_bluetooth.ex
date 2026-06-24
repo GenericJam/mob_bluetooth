@@ -65,6 +65,28 @@ defmodule MobBluetooth do
   on Android, which has no BLE surface in this plugin yet) and need a real radio,
   so they do nothing on the iOS Simulator.
 
+  ### Background BLE
+
+  For BLE to keep running while the app is backgrounded, two things are needed
+  (both shipped here):
+
+    * The app's Info.plist must declare `UIBackgroundModes` `bluetooth-central`
+      (scanning/connecting) and/or `bluetooth-peripheral` (advertising). This
+      plugin's manifest contributes both; mob_dev >= 0.6.16 merges them into the
+      host Info.plist (alongside any existing entry such as `audio`).
+    * Background **scanning requires a `:service_uuids` filter** —
+      `ble_scan(socket, service_uuids: ["180D"])`. iOS silently drops an
+      unfiltered scan once backgrounded, so a foreground-style
+      `ble_scan(socket)` will not deliver in the background.
+
+  iOS heavily throttles background BLE: scans are coalesced and de-duplicated
+  (no repeat advertisement callbacks, slower RSSI), and background advertising
+  drops the local name and moves service UUIDs to an overflow area only other
+  iOS devices scanning for them can see. This is normal CoreBluetooth behaviour,
+  not a plugin limitation. (Do not reach for the `mob_background` audio
+  keep-alive for BLE — the dedicated background modes above are the Apple-blessed,
+  review-safe path.)
+
   ## Pairing flow
 
   Two pairing modes, auto-selected by whether `:pin` is given:
@@ -258,6 +280,13 @@ defmodule MobBluetooth do
   @doc """
   Scan for nearby BLE peripherals (iOS / CoreBluetooth).
 
+  Pass `:service_uuids` (a list of service-UUID strings, e.g.
+  `["180D", "0000180F-0000-1000-8000-00805F9B34FB"]`) to filter the scan.
+  Omitting it scans for everything, which works in the foreground but **not in
+  the background** — iOS silently drops an unfiltered scan once the app is
+  backgrounded, so a service-UUID filter is required for background scanning
+  (see "Background BLE" in the moduledoc).
+
   Emits, to the calling process (same `:bt` device-event family as classic
   discovery):
 
@@ -269,14 +298,25 @@ defmodule MobBluetooth do
   iOS only — `{:error, :unsupported}` elsewhere. BLE needs a real radio, so it
   does nothing on the iOS Simulator.
   """
-  @spec ble_scan(socket :: term()) :: term()
-  def ble_scan(socket) do
+  @spec ble_scan(socket :: term(), keyword()) :: term()
+  def ble_scan(socket, opts \\ []) do
     if MobBluetooth.Platform.ble_unsupported?(MobBluetooth.Platform.current()) do
       {:error, :unsupported}
     else
-      :mob_bluetooth_nif.ble_scan()
+      :mob_bluetooth_nif.ble_scan(scan_service_uuids(opts))
       socket
     end
+  end
+
+  @doc false
+  # Normalise the `:service_uuids` opt to a list of binaries (dropping anything
+  # non-binary). Pure, so the opt handling is unit-testable without the NIF.
+  @spec scan_service_uuids(keyword()) :: [binary()]
+  def scan_service_uuids(opts) do
+    opts
+    |> Keyword.get(:service_uuids, [])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
   end
 
   @doc """

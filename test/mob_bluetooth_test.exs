@@ -131,9 +131,23 @@ defmodule MobBluetoothTest do
     test "MobBluetooth exports the ble_* API" do
       fns = MobBluetooth.__info__(:functions)
       assert {:ble_scan, 1} in fns
+      assert {:ble_scan, 2} in fns
       assert {:ble_stop_scan, 1} in fns
       assert {:ble_advertise, 2} in fns
       assert {:ble_stop_advertise, 1} in fns
+    end
+
+    test "scan_service_uuids/1 defaults to [] (unfiltered scan)" do
+      assert MobBluetooth.scan_service_uuids([]) == []
+    end
+
+    test "scan_service_uuids/1 keeps a list of binary UUIDs" do
+      assert MobBluetooth.scan_service_uuids(service_uuids: ["180D", "180F"]) == ["180D", "180F"]
+    end
+
+    test "scan_service_uuids/1 wraps a bare binary and drops non-binaries" do
+      assert MobBluetooth.scan_service_uuids(service_uuids: "180D") == ["180D"]
+      assert MobBluetooth.scan_service_uuids(service_uuids: ["180D", :x, 1, nil]) == ["180D"]
     end
 
     test "advertise_name/1 defaults to \"Mob\" when no :name is given" do
@@ -163,12 +177,12 @@ defmodule MobBluetoothTest do
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "the NIF stub exports the ble_* functions and is nif_not_loaded on host" do
       exports = :mob_bluetooth_nif.module_info(:exports)
-      assert {:ble_scan, 0} in exports
+      assert {:ble_scan, 1} in exports
       assert {:ble_stop_scan, 0} in exports
       assert {:ble_advertise, 1} in exports
       assert {:ble_stop_advertise, 0} in exports
 
-      assert_raise ErlangError, ~r/nif_not_loaded/, fn -> :mob_bluetooth_nif.ble_scan() end
+      assert_raise ErlangError, ~r/nif_not_loaded/, fn -> :mob_bluetooth_nif.ble_scan([]) end
     end
 
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
@@ -181,12 +195,23 @@ defmodule MobBluetoothTest do
     end
 
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
-    test "the iOS NIF uses CoreBluetooth scan + advertise and the :bt event family" do
+    test "the manifest declares UIBackgroundModes for background BLE (central + peripheral)" do
+      {manifest, _} = Code.eval_file(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
+      modes = get_in(manifest, [:ios, :plist_keys, :UIBackgroundModes])
+      assert "bluetooth-central" in modes
+      assert "bluetooth-peripheral" in modes
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the iOS NIF uses CoreBluetooth scan + advertise, a service-UUID filter, and the :bt event family" do
       src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_bluetooth_nif.m"))
       assert src =~ "#import <CoreBluetooth/CoreBluetooth.h>"
       assert src =~ "scanForPeripheralsWithServices"
       assert src =~ "startAdvertising"
       assert src =~ "ble_device"
+      # background scanning needs an explicit service-UUID filter
+      assert src =~ "CBUUID"
+      assert src =~ "scanServiceUUIDs"
       assert src =~ ~s(ERL_NIF_INIT(mob_bluetooth_nif)
     end
   end

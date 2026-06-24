@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.2.1] - 2026-06-24
+
+### Added
+- **Background BLE support.** The iOS BLE surface now actually works while the
+  app is backgrounded, not just in the foreground:
+  - The manifest declares `UIBackgroundModes` `bluetooth-central` +
+    `bluetooth-peripheral`, merged into the host Info.plist by mob_dev >= 0.6.16
+    (composes with any existing entry such as `audio`).
+  - `ble_scan/2` takes a `:service_uuids` filter
+    (`ble_scan(socket, service_uuids: ["180D"])`). iOS silently drops an
+    unfiltered scan once backgrounded, so a filter is required for background
+    scanning; omitting it keeps the previous foreground-only "scan for
+    everything" behaviour. (`ble_scan(socket)` is unchanged.)
+
+  See the "Background BLE" moduledoc section for the iOS throttling caveats
+  (coalesced scans, no local name in background advertising). Requires
+  **mob_dev >= 0.6.16** for the `UIBackgroundModes` array merge.
+
+---
+
 ## [0.2.0] - 2026-06-24
 
 ### Added
