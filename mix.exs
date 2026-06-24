@@ -6,7 +6,7 @@ defmodule MobBluetooth.MixProject do
   def project do
     [
       app: :mob_bluetooth,
-      version: "0.1.1",
+      version: "0.1.2",
       elixir: "~> 1.18",
       start_permanent: false,
       deps: deps(),

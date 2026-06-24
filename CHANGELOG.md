@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.2] - 2026-06-24
+
+### Added
+- **`MobBluetooth.make_discoverable/2`** — request that the device become
+  discoverable to nearby Bluetooth devices for `:duration` seconds (default 120)
+  via `ACTION_REQUEST_DISCOVERABLE`, showing the system "make discoverable?"
+  dialog. First call to exercise `BLUETOOTH_ADVERTISE` (now declared in the
+  manifest). Fire-and-forget: the system dialog is the user-facing result; the
+  accept/deny outcome is not captured (a follow-up needs `onActivityResult`
+  plumbing). Failures (adapter off / permission not granted) arrive as
+  `{:bt, :error, reason}`. An invalid `:duration` falls back to the default
+  (pure, tested `discoverable_duration/1`). Device-verified on a Moto G power 5G
+  (Android 15). (#1)
+
+### Security
+- Bumped `plug` 1.19.2 → 1.20.1 (dev/test-only transitive via `mob_dev`),
+  clearing EEF-CVE-2026-54892 (quadratic-time nested-param decoding DoS). Does
+  not ship in the package; lockfile-only.
+
+---
+
 ## [0.1.1] - 2026-06-16
 
 ### Changed
