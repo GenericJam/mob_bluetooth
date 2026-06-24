@@ -106,5 +106,26 @@ defmodule MobBluetoothTest do
     end
   end
 
+  describe "bluetooth_connect runtime permission capability" do
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the manifest registers the :bluetooth_connect capability" do
+      {manifest, _} = Code.eval_file(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
+      caps = manifest |> Map.get(:permissions, []) |> Enum.map(& &1[:capability])
+      assert :bluetooth_connect in caps
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the Android bridge is a MobPermissionProvider mapping :bluetooth_connect to the Nearby-devices group" do
+      src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBluetoothBridge.kt"))
+      assert src =~ "io.mob.plugin.MobPermissionProvider"
+      assert src =~ "fun permissionsFor"
+      assert src =~ "bluetooth_connect"
+
+      for perm <- ~w(BLUETOOTH_CONNECT BLUETOOTH_SCAN BLUETOOTH_ADVERTISE) do
+        assert src =~ "permission.#{perm}", "permissionsFor must request #{perm}"
+      end
+    end
+  end
+
   defp decoded(json) when is_binary(json), do: :json.decode(json)
 end
