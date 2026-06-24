@@ -13,6 +13,9 @@
     permissions: [
       "android.permission.BLUETOOTH_CONNECT",
       "android.permission.BLUETOOTH_SCAN",
+      # make_discoverable fires ACTION_REQUEST_DISCOVERABLE, which needs
+      # BLUETOOTH_ADVERTISE on Android 12+.
+      "android.permission.BLUETOOTH_ADVERTISE",
       # Discovery (startDiscovery) returns scan results only with location access.
       "android.permission.ACCESS_FINE_LOCATION"
     ],

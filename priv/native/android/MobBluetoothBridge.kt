@@ -251,6 +251,35 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware {
       nativeDeliverBtDiscoveryCancelled(pid)
   }
 
+  // ── Discoverability (advertise) ─────────────────────────────────────────
+  // Make the device discoverable to nearby Bluetooth devices for
+  // `durationSeconds` (Android caps at 300). Fires ACTION_REQUEST_DISCOVERABLE,
+  // which shows the system "make discoverable?" dialog and, on API 31+, REQUIRES
+  // the BLUETOOTH_ADVERTISE runtime permission (a SecurityException otherwise).
+  // Fire-and-forget: the system dialog is the user-facing result; we don't
+  // capture accept/deny (that needs onActivityResult plumbing — a follow-up).
+  // Only the existing error thunk is used, so no new delivery thunk is needed.
+  @JvmStatic
+  fun bt_make_discoverable(pid: Long, durationSeconds: Int) {
+      val adapter = btAdapter() ?: run { nativeDeliverBtError(pid, "no_adapter"); return }
+      val activity = activityRef?.get() ?: run { nativeDeliverBtError(pid, "no_activity"); return }
+      if (!adapter.isEnabled) { nativeDeliverBtError(pid, "adapter_disabled"); return }
+      // Launching the system discoverability dialog must happen on the UI thread;
+      // the NIF invokes this from a BEAM thread.
+      activity.runOnUiThread {
+          try {
+              val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                  putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, durationSeconds)
+              }
+              activity.startActivity(intent)
+          } catch (e: SecurityException) {
+              nativeDeliverBtError(pid, "permission_denied")
+          } catch (e: Exception) {
+              nativeDeliverBtError(pid, "discoverable_failed")
+          }
+      }
+  }
+
   @JvmStatic
   fun bt_pair(pid: Long, json: String) {
       val adapter = btAdapter() ?: run { nativeDeliverBtError(pid, "no_adapter"); return }
