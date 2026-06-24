@@ -61,5 +61,50 @@ defmodule MobBluetoothTest do
     end
   end
 
+  describe "make_discoverable (BLUETOOTH_ADVERTISE)" do
+    @plugin_dir Path.expand("..", __DIR__)
+
+    test "MobBluetooth exports make_discoverable/2" do
+      assert {:make_discoverable, 2} in MobBluetooth.__info__(:functions)
+    end
+
+    test "discoverable_duration/1 defaults to 120 when no :duration is given" do
+      assert MobBluetooth.discoverable_duration([]) == 120
+    end
+
+    test "discoverable_duration/1 passes a valid non-negative integer through" do
+      assert MobBluetooth.discoverable_duration(duration: 60) == 60
+      assert MobBluetooth.discoverable_duration(duration: 0) == 0
+    end
+
+    test "discoverable_duration/1 falls back to the default for invalid input" do
+      assert MobBluetooth.discoverable_duration(duration: -5) == 120
+      assert MobBluetooth.discoverable_duration(duration: "120") == 120
+      assert MobBluetooth.discoverable_duration(duration: nil) == 120
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the NIF stub exports bt_make_discoverable/1 and is nif_not_loaded on host" do
+      assert {:bt_make_discoverable, 1} in :mob_bluetooth_nif.module_info(:exports)
+
+      assert_raise ErlangError, ~r/nif_not_loaded/, fn ->
+        :mob_bluetooth_nif.bt_make_discoverable(120)
+      end
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the manifest declares BLUETOOTH_ADVERTISE (needed by ACTION_REQUEST_DISCOVERABLE)" do
+      assert File.read!(Path.join(@plugin_dir, "priv/mob_plugin.exs")) =~
+               "android.permission.BLUETOOTH_ADVERTISE"
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the Android bridge fires ACTION_REQUEST_DISCOVERABLE from bt_make_discoverable" do
+      src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBluetoothBridge.kt"))
+      assert src =~ "fun bt_make_discoverable"
+      assert src =~ "ACTION_REQUEST_DISCOVERABLE"
+    end
+  end
+
   defp decoded(json) when is_binary(json), do: :json.decode(json)
 end

@@ -38,6 +38,7 @@ const BtMethods = struct {
     list_paired: jni.JMethodID = null,
     start_discovery: jni.JMethodID = null,
     cancel_discovery: jni.JMethodID = null,
+    make_discoverable: jni.JMethodID = null,
     pair: jni.JMethodID = null,
     unpair: jni.JMethodID = null,
     disconnect: jni.JMethodID = null,
@@ -65,6 +66,7 @@ export fn Java_io_mob_bluetooth_MobBluetoothBridge_nativeRegister(jenv: *jni.JNI
     g_bt.list_paired = jni.getStaticMethodID(jenv, cls, "bt_list_paired", "(J)V");
     g_bt.start_discovery = jni.getStaticMethodID(jenv, cls, "bt_start_discovery", "(J)V");
     g_bt.cancel_discovery = jni.getStaticMethodID(jenv, cls, "bt_cancel_discovery", "(J)V");
+    g_bt.make_discoverable = jni.getStaticMethodID(jenv, cls, "bt_make_discoverable", "(JI)V");
     g_bt.pair = jni.getStaticMethodID(jenv, cls, "bt_pair", "(JLjava/lang/String;)V");
     g_bt.unpair = jni.getStaticMethodID(jenv, cls, "bt_unpair", "(JLjava/lang/String;)V");
     g_bt.disconnect = jni.getStaticMethodID(jenv, cls, "bt_disconnect", "(JI)V");
@@ -991,6 +993,32 @@ export fn nif_bt_cancel_discovery(
     return erts.ok(env);
 }
 
+export fn nif_bt_make_discoverable(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_bt.make_discoverable == null) return btUnsupported(env);
+    var duration: c_int = 0;
+    if (erts.enif_get_int(env, argv[0], &duration) == 0) return erts.badarg(env);
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
+    defer detachIfAttached(attached);
+
+    jenv.*.CallStaticVoidMethod.?(
+        jenv,
+        g_bt_cls,
+        g_bt.make_discoverable,
+        pidToJlong(pid),
+        @as(jni.JInt, duration),
+    );
+    return erts.ok(env);
+}
+
 // ── JSON-arg NIFs (pair / unpair / hfp_connect / spp_connect) ──
 
 export fn nif_bt_pair(
@@ -1264,6 +1292,7 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "bt_list_paired", .arity = 0, .fptr = nif_bt_list_paired, .flags = 0 },
     .{ .name = "bt_start_discovery", .arity = 0, .fptr = nif_bt_start_discovery, .flags = 0 },
     .{ .name = "bt_cancel_discovery", .arity = 0, .fptr = nif_bt_cancel_discovery, .flags = 0 },
+    .{ .name = "bt_make_discoverable", .arity = 1, .fptr = nif_bt_make_discoverable, .flags = 0 },
     .{ .name = "bt_pair", .arity = 1, .fptr = nif_bt_pair, .flags = 0 },
     .{ .name = "bt_unpair", .arity = 1, .fptr = nif_bt_unpair, .flags = 0 },
     .{ .name = "bt_disconnect", .arity = 1, .fptr = nif_bt_disconnect, .flags = 0 },

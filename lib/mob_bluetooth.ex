@@ -144,6 +144,42 @@ defmodule MobBluetooth do
     end
   end
 
+  @default_discoverable_duration 120
+
+  @doc """
+  Request that the device become discoverable to nearby Bluetooth devices for
+  `:duration` seconds (default #{@default_discoverable_duration}). Shows the
+  system "make discoverable?" dialog.
+
+  An invalid `:duration` (missing, non-integer, or negative) falls back to the
+  default; the platform bounds the upper end. Requires the `BLUETOOTH_ADVERTISE`
+  runtime permission (the Android 12+ "Nearby devices" group) — request it
+  before calling. Fire-and-forget: the system dialog is the user-facing result;
+  the accept/deny outcome is not captured today. A failure (adapter off,
+  permission not granted) arrives as `{:bt, :error, reason}`.
+  """
+  @spec make_discoverable(socket :: term(), keyword()) :: term()
+  def make_discoverable(socket, opts \\ []) do
+    if MobBluetooth.Platform.unsupported?(MobBluetooth.Platform.current()) do
+      {:error, :unsupported}
+    else
+      :mob_bluetooth_nif.bt_make_discoverable(discoverable_duration(opts))
+      socket
+    end
+  end
+
+  @doc false
+  # Normalise the `:duration` opt to a non-negative integer of seconds, falling
+  # back to the default for a missing/non-integer/negative value. Pure, so the
+  # opt handling is unit-testable without the device NIF.
+  @spec discoverable_duration(keyword()) :: non_neg_integer()
+  def discoverable_duration(opts) do
+    case Keyword.get(opts, :duration, @default_discoverable_duration) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> @default_discoverable_duration
+    end
+  end
+
   @doc """
   Pair (bond) with a Bluetooth device.
 
