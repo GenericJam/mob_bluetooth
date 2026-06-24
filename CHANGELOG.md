@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.3] - 2026-06-24
+
+### Added
+- **`:bluetooth_connect` runtime permission capability.** The Android bridge now
+  implements `MobPermissionProvider`, mapping `:bluetooth_connect` to the whole
+  Android 12+ "Nearby devices" group (`BLUETOOTH_CONNECT` / `BLUETOOTH_SCAN` /
+  `BLUETOOTH_ADVERTISE`), and the manifest registers the capability. So
+  `Mob.Permissions.request(socket, :bluetooth_connect)` now shows the runtime
+  dialog and a single grant unlocks discovery, pairing, and `make_discoverable`
+  together — previously the plugin declared the permissions but had no way to
+  request the grant in-app (it returned `:denied` without a manual `adb grant`).
+  Android-only (BT Classic is unsupported on iOS). Device-verified on a Moto G
+  power 5G. (#2)
+
+---
+
 ## [0.1.2] - 2026-06-24
 
 ### Added
