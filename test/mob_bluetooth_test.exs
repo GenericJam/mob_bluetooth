@@ -195,11 +195,26 @@ defmodule MobBluetoothTest do
     end
 
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
-    test "the manifest declares UIBackgroundModes for background BLE (central + peripheral)" do
-      {manifest, _} = Code.eval_file(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
-      modes = get_in(manifest, [:ios, :plist_keys, :UIBackgroundModes])
-      assert "bluetooth-central" in modes
-      assert "bluetooth-peripheral" in modes
+    test "background BLE is opt-in per app via config :mob_bluetooth, :ble_background_modes" do
+      load_modes = fn ->
+        {m, _} = Code.eval_file(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
+        get_in(m, [:ios, :plist_keys, :UIBackgroundModes])
+      end
+
+      on_exit(fn -> Application.delete_env(:mob_bluetooth, :ble_background_modes) end)
+
+      # Default: foreground-only — no UIBackgroundModes declared (keeps unused
+      # background modes out of App Review).
+      Application.delete_env(:mob_bluetooth, :ble_background_modes)
+      assert load_modes.() == nil
+
+      # Opt in to a single mode.
+      Application.put_env(:mob_bluetooth, :ble_background_modes, [:central])
+      assert load_modes.() == ["bluetooth-central"]
+
+      # Opt in to both.
+      Application.put_env(:mob_bluetooth, :ble_background_modes, [:central, :peripheral])
+      assert load_modes.() == ["bluetooth-central", "bluetooth-peripheral"]
     end
 
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest

@@ -67,13 +67,19 @@ defmodule MobBluetooth do
 
   ### Background BLE
 
-  For BLE to keep running while the app is backgrounded, two things are needed
-  (both shipped here):
+  Background BLE is **opt-in per app** — by default this plugin declares no
+  background modes (foreground only), so apps that don't need it don't ship an
+  unused background-mode declaration (Apple rejects those at review). To enable
+  it, two things are needed:
 
-    * The app's Info.plist must declare `UIBackgroundModes` `bluetooth-central`
-      (scanning/connecting) and/or `bluetooth-peripheral` (advertising). This
-      plugin's manifest contributes both; mob_dev >= 0.6.16 merges them into the
-      host Info.plist (alongside any existing entry such as `audio`).
+    * Declare the mode(s) you use in your app config. Each adds the matching
+      `UIBackgroundModes` entry to the host Info.plist (array-merged by
+      mob_dev >= 0.6.16, alongside any existing entry such as `audio`):
+
+          config :mob_bluetooth, ble_background_modes: [:central]              # background scanning/connecting
+          config :mob_bluetooth, ble_background_modes: [:peripheral]           # background advertising
+          config :mob_bluetooth, ble_background_modes: [:central, :peripheral] # both
+
     * Background **scanning requires a `:service_uuids` filter** —
       `ble_scan(socket, service_uuids: ["180D"])`. iOS silently drops an
       unfiltered scan once backgrounded, so a foreground-style

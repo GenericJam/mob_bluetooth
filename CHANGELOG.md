@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.2.2] - 2026-06-24
+
+### Changed
+- **Background BLE is now opt-in per app** (was: both modes always declared in
+  0.2.1). By default the plugin declares no `UIBackgroundModes`, so apps that
+  don't need background BLE don't ship an unused background-mode declaration
+  (which Apple rejects at review). An app enables exactly the mode(s) it uses:
+
+      config :mob_bluetooth, ble_background_modes: [:central]              # background scanning/connecting
+      config :mob_bluetooth, ble_background_modes: [:peripheral]           # background advertising
+      config :mob_bluetooth, ble_background_modes: [:central, :peripheral] # both
+
+  The manifest reads this at build time via `MobDev.Plugin.host_config` and
+  contributes the matching `UIBackgroundModes` entries, array-merged into the
+  host Info.plist by mob_dev >= 0.6.16. **Verified on a real iOS build**: with
+  `[:central, :peripheral]` configured, the built app's Info.plist
+  `UIBackgroundModes` = `[audio, bluetooth-central, bluetooth-peripheral]`
+  (composing with a pre-existing entry). Requires **mob_dev >= 0.6.16**.
+
+---
+
 ## [0.2.1] - 2026-06-24
 
 ### Added
