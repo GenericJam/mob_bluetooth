@@ -49,6 +49,10 @@ const BtMethods = struct {
     hfp_stop_sco: jni.JMethodID = null,
     spp_connect: jni.JMethodID = null,
     spp_write: jni.JMethodID = null,
+    // BLE (Low Energy) — GATT peripheral.
+    ble_start_advertising: jni.JMethodID = null,
+    ble_stop_advertising: jni.JMethodID = null,
+    ble_notify: jni.JMethodID = null,
 };
 
 var g_bt: BtMethods = .{};
@@ -77,6 +81,9 @@ export fn Java_io_mob_bluetooth_MobBluetoothBridge_nativeRegister(jenv: *jni.JNI
     g_bt.hfp_stop_sco = jni.getStaticMethodID(jenv, cls, "bt_hfp_stop_sco", "(JI)V");
     g_bt.spp_connect = jni.getStaticMethodID(jenv, cls, "bt_spp_connect", "(JLjava/lang/String;)V");
     g_bt.spp_write = jni.getStaticMethodID(jenv, cls, "bt_spp_write", "(JI[B)V");
+    g_bt.ble_start_advertising = jni.getStaticMethodID(jenv, cls, "ble_start_advertising", "(JLjava/lang/String;)V");
+    g_bt.ble_stop_advertising = jni.getStaticMethodID(jenv, cls, "ble_stop_advertising", "(J)V");
+    g_bt.ble_notify = jni.getStaticMethodID(jenv, cls, "ble_notify", "(JLjava/lang/String;[B)V");
 }
 
 // ── Thread-attach helpers ────────────────────────────────────────────────
@@ -183,6 +190,16 @@ const MobBtAtoms = struct {
     data: erts.ERL_NIF_TERM = 0,
     written: erts.ERL_NIF_TERM = 0,
 
+    // BLE (Low Energy) channel + tags
+    bt_le: erts.ERL_NIF_TERM = 0,
+    advertising_started: erts.ERL_NIF_TERM = 0,
+    advertising_failed: erts.ERL_NIF_TERM = 0,
+    central_connected: erts.ERL_NIF_TERM = 0,
+    central_disconnected: erts.ERL_NIF_TERM = 0,
+    subscribed: erts.ERL_NIF_TERM = 0,
+    unsubscribed: erts.ERL_NIF_TERM = 0,
+    write: erts.ERL_NIF_TERM = 0,
+
     // Map keys
     k_address: erts.ERL_NIF_TERM = 0,
     k_name: erts.ERL_NIF_TERM = 0,
@@ -192,6 +209,9 @@ const MobBtAtoms = struct {
     k_cmd_type: erts.ERL_NIF_TERM = 0,
     k_args: erts.ERL_NIF_TERM = 0,
     k_size: erts.ERL_NIF_TERM = 0,
+    k_central: erts.ERL_NIF_TERM = 0,
+    k_characteristic: erts.ERL_NIF_TERM = 0,
+    k_bytes: erts.ERL_NIF_TERM = 0,
 
     // Constants
     nil_atom: erts.ERL_NIF_TERM = 0,
@@ -230,6 +250,15 @@ pub fn mobBtAtomsInit(env: ?*erts.ErlNifEnv) void {
     mob_bt_atoms.data = erts.atom(env, "data");
     mob_bt_atoms.written = erts.atom(env, "written");
 
+    mob_bt_atoms.bt_le = erts.atom(env, "bt_le");
+    mob_bt_atoms.advertising_started = erts.atom(env, "advertising_started");
+    mob_bt_atoms.advertising_failed = erts.atom(env, "advertising_failed");
+    mob_bt_atoms.central_connected = erts.atom(env, "central_connected");
+    mob_bt_atoms.central_disconnected = erts.atom(env, "central_disconnected");
+    mob_bt_atoms.subscribed = erts.atom(env, "subscribed");
+    mob_bt_atoms.unsubscribed = erts.atom(env, "unsubscribed");
+    mob_bt_atoms.write = erts.atom(env, "write");
+
     mob_bt_atoms.k_address = erts.atom(env, "address");
     mob_bt_atoms.k_name = erts.atom(env, "name");
     mob_bt_atoms.k_bonded = erts.atom(env, "bonded");
@@ -238,6 +267,9 @@ pub fn mobBtAtomsInit(env: ?*erts.ErlNifEnv) void {
     mob_bt_atoms.k_cmd_type = erts.atom(env, "cmd_type");
     mob_bt_atoms.k_args = erts.atom(env, "args");
     mob_bt_atoms.k_size = erts.atom(env, "size");
+    mob_bt_atoms.k_central = erts.atom(env, "central");
+    mob_bt_atoms.k_characteristic = erts.atom(env, "characteristic");
+    mob_bt_atoms.k_bytes = erts.atom(env, "bytes");
 
     mob_bt_atoms.nil_atom = erts.atom(env, "nil");
     mob_bt_atoms.true_atom = erts.atom(env, "true");
@@ -343,6 +375,30 @@ fn mobBtMakeVendorAtMap(env: ?*erts.ErlNifEnv, cmd: ?[*:0]const u8, cmd_type: c_
 fn mobBtMakeSizeMap(env: ?*erts.ErlNifEnv, size: c_int) erts.ERL_NIF_TERM {
     const keys = [_]erts.ERL_NIF_TERM{mob_bt_atoms.k_size};
     const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_int(env, size)};
+    return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
+}
+
+/// Build `%{central: int}` for LE connection events.
+fn mobBleMakeCentralMap(env: ?*erts.ErlNifEnv, central: c_int) erts.ERL_NIF_TERM {
+    const keys = [_]erts.ERL_NIF_TERM{mob_bt_atoms.k_central};
+    const vals = [_]erts.ERL_NIF_TERM{erts.enif_make_int(env, central)};
+    return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
+}
+
+/// Build `%{characteristic: <<...>>}` for subscribe/unsubscribe events.
+fn mobBleMakeCharMap(env: ?*erts.ErlNifEnv, char_uuid: ?[*:0]const u8) erts.ERL_NIF_TERM {
+    const keys = [_]erts.ERL_NIF_TERM{mob_bt_atoms.k_characteristic};
+    const vals = [_]erts.ERL_NIF_TERM{mobBtMakeBinaryStr(env, char_uuid)};
+    return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
+}
+
+/// Build `%{characteristic: <<...>>, bytes: <<...>>}` for an incoming write.
+fn mobBleMakeWriteMap(env: ?*erts.ErlNifEnv, char_uuid: ?[*:0]const u8, bytes: ?[*]const u8, len: usize) erts.ERL_NIF_TERM {
+    const keys = [_]erts.ERL_NIF_TERM{ mob_bt_atoms.k_characteristic, mob_bt_atoms.k_bytes };
+    const vals = [_]erts.ERL_NIF_TERM{
+        mobBtMakeBinaryStr(env, char_uuid),
+        mobBtMakeBinaryBytes(env, bytes, len),
+    };
     return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
 }
 
@@ -900,6 +956,98 @@ pub export fn mob_deliver_bt_spp_error(
     _ = erts.enif_send(null, &pid, env, msg);
 }
 
+// ── BLE (Low Energy) peripheral deliveries ─────────────────────────────
+// All tagged `:bt_le`. Connection events carry an opaque integer `central`
+// handle; subscribe/write carry the characteristic UUID string.
+
+pub export fn mob_deliver_ble_advertising_started(pid_long: jni.JLong) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.advertising_started,
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_advertising_failed(pid_long: jni.JLong, reason: ?[*:0]const u8) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.advertising_failed,
+        mobBtMakeReasonOnly(env, reason),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_central_connected(pid_long: jni.JLong, central: c_int) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.central_connected,
+        mobBleMakeCentralMap(env, central),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_central_disconnected(pid_long: jni.JLong, central: c_int) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.central_disconnected,
+        mobBleMakeCentralMap(env, central),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_subscribed(pid_long: jni.JLong, char_uuid: ?[*:0]const u8) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.subscribed,
+        mobBleMakeCharMap(env, char_uuid),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_unsubscribed(pid_long: jni.JLong, char_uuid: ?[*:0]const u8) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.unsubscribed,
+        mobBleMakeCharMap(env, char_uuid),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+pub export fn mob_deliver_ble_write(
+    pid_long: jni.JLong,
+    char_uuid: ?[*:0]const u8,
+    bytes: ?[*]const u8,
+    len: usize,
+) callconv(.c) void {
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+    const msg = erts.makeTuple(env, .{
+        mob_bt_atoms.bt_le,
+        mob_bt_atoms.write,
+        mobBleMakeWriteMap(env, char_uuid, bytes, len),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // NIF wrappers — `nif_bt_*`
 // ═════════════════════════════════════════════════════════════════════════
@@ -1276,6 +1424,85 @@ export fn nif_bt_spp_write(
     return erts.ok(env);
 }
 
+// ── BLE (Low Energy) peripheral NIFs ──
+
+export fn nif_ble_start_advertising(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_bt.ble_start_advertising == null) return btUnsupported(env);
+    const bin = getBinOrIolist(env, argv[0]) orelse return erts.badarg(env);
+    const json = binToCString(bin) orelse return erts.atom(env, "error");
+    defer freeCString(json);
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+    return callBridgePidStr(env, g_bt.ble_start_advertising, pid, json);
+}
+
+export fn nif_ble_stop_advertising(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    _ = argv;
+    if (g_bt.ble_stop_advertising == null) return btUnsupported(env);
+
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
+    defer detachIfAttached(attached);
+
+    jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, g_bt.ble_stop_advertising, pidToJlong(pid));
+    return erts.ok(env);
+}
+
+// ble_notify(char_uuid_string, bytes) — outbound notification on a
+// characteristic. String + byte[], like a hybrid of pair (string) and
+// spp_write (bytes).
+export fn nif_ble_notify(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    if (g_bt.ble_notify == null) return btUnsupported(env);
+
+    const uuid_bin = getBinOrIolist(env, argv[0]) orelse return erts.badarg(env);
+    const uuid = binToCString(uuid_bin) orelse return erts.atom(env, "error");
+    defer freeCString(uuid);
+    const bytes_bin = getBinOrIolist(env, argv[1]) orelse return erts.badarg(env);
+
+    var pid: erts.ErlNifPid = undefined;
+    _ = erts.enif_self(env, &pid);
+
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
+    defer detachIfAttached(attached);
+
+    const juuid = jni.newStringUTF(jenv, uuid);
+    const size: jni.JSize = @intCast(bytes_bin.size);
+    const jbytes = jni.newByteArray(jenv, size);
+    if (jbytes != null) {
+        jni.setByteArrayRegion(jenv, jbytes, 0, size, @ptrCast(bytes_bin.data));
+        jenv.*.CallStaticVoidMethod.?(
+            jenv,
+            g_bt_cls,
+            g_bt.ble_notify,
+            pidToJlong(pid),
+            juuid,
+            jbytes,
+        );
+        jni.deleteLocalRef(jenv, jbytes);
+    }
+    if (juuid != null) jni.deleteLocalRef(jenv, juuid);
+    return erts.ok(env);
+}
+
 // ── ErlNifEntry `.load` — init atom cache + paired-list accumulator ───────
 
 fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) callconv(.c) c_int {
@@ -1303,6 +1530,9 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "bt_hfp_stop_sco", .arity = 1, .fptr = nif_bt_hfp_stop_sco, .flags = 0 },
     .{ .name = "bt_spp_connect", .arity = 1, .fptr = nif_bt_spp_connect, .flags = 0 },
     .{ .name = "bt_spp_write", .arity = 2, .fptr = nif_bt_spp_write, .flags = erts.ERL_NIF_DIRTY_JOB_IO_BOUND },
+    .{ .name = "ble_start_advertising", .arity = 1, .fptr = nif_ble_start_advertising, .flags = 0 },
+    .{ .name = "ble_stop_advertising", .arity = 0, .fptr = nif_ble_stop_advertising, .flags = 0 },
+    .{ .name = "ble_notify", .arity = 2, .fptr = nif_ble_notify, .flags = 0 },
 };
 
 var nif_entry: erts.ErlNifEntry = .{

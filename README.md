@@ -23,11 +23,22 @@ Elixir API surface.
 
 ## Modules
 
+**Bluetooth Classic (BR/EDR) — Android only:**
+
 - `MobBluetooth` — device-level (list paired, discover, pair, unpair,
   disconnect)
 - `MobBluetooth.Hfp` — Hands-Free Profile (audio + vendor AT commands)
-- `MobBluetooth.Hid` — Human Interface Device (input reports)
 - `MobBluetooth.Spp` — Serial Port Profile (RFCOMM byte streams)
+
+**Bluetooth Low Energy (BLE) — cross-platform (iOS + Android):**
+
+- `MobBluetooth.Le` — GATT **peripheral** role: advertise a service, push
+  notifications to subscribed centrals, receive writes. The phone presents
+  itself as a BLE device (sensor, accessory, BLE-MIDI peripheral) that a
+  computer or another phone connects to. BLE needs no MFi, so this is the
+  plugin's cross-platform surface (`CBPeripheralManager` on iOS,
+  `BluetoothGattServer` + `BluetoothLeAdvertiser` on Android). Scope is
+  peripheral-only for now; BLE central is a future addition.
 
 ## Installation
 
@@ -57,12 +68,13 @@ mix mob.plugin.trust mob_bluetooth
 
 ## Platform support
 
-- **Android only.** iOS Bluetooth Classic requires Apple's MFi
-  (paid, NDA-gated). All `MobBluetooth.*` functions return
-  `{:error, :unsupported}` synchronously on iOS — the host app
-  is responsible for guarding the call sites.
-- For iOS-equivalent custom-hardware connectivity, use BLE
-  (`Mob.Ble`, in mob core).
+- **Bluetooth Classic: Android only.** iOS Bluetooth Classic requires
+  Apple's MFi (paid, NDA-gated). The Classic `MobBluetooth.*` functions
+  return `{:error, :unsupported}` synchronously on iOS — the host app is
+  responsible for guarding the call sites.
+- **BLE (`MobBluetooth.Le`): cross-platform.** BLE needs no MFi, so it
+  works on both iOS (`CBPeripheralManager`) and Android. Only the host
+  dev target (no radio) is unsupported.
 
 ## Permissions
 

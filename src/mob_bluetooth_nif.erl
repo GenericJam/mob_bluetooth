@@ -21,14 +21,18 @@
     bt_hfp_stop_sco/1,
     bt_spp_connect/1,
     bt_spp_write/2,
-    %% BLE (iOS / CoreBluetooth). Android provides the classic bt_* NIFs above
-    %% and not these; iOS provides these and not the bt_* classic ones. The
-    %% Elixir layer gates each set to its platform, so the other platform's
-    %% functions are never called (they stay nif_error stubs here).
+    %% BLE central scan + name advertise (iOS / CoreBluetooth — Android wraps
+    %% classic BT and doesn't implement these; the Elixir layer gates per
+    %% platform so the other platform's functions stay nif_error stubs).
     ble_scan/1,
     ble_stop_scan/0,
     ble_advertise/1,
-    ble_stop_advertise/0
+    ble_stop_advertise/0,
+    %% BLE GATT peripheral (MobBluetooth.Le — cross-platform: zig on Android,
+    %% objc on iOS; both register these three under this module).
+    ble_start_advertising/1,
+    ble_stop_advertising/0,
+    ble_notify/2
 ]).
 -on_load(init/0).
 
@@ -90,4 +94,14 @@ ble_advertise(_Name) ->
     erlang:nif_error(nif_not_loaded).
 
 ble_stop_advertise() ->
+    erlang:nif_error(nif_not_loaded).
+
+%% BLE (Low Energy) — GATT peripheral.
+ble_start_advertising(_Json) ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_stop_advertising() ->
+    erlang:nif_error(nif_not_loaded).
+
+ble_notify(_CharUuid, _Bytes) ->
     erlang:nif_error(nif_not_loaded).

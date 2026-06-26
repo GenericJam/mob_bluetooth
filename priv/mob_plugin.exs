@@ -44,20 +44,22 @@ ios_plist_keys =
   name: :mob_bluetooth,
   mob_version: "~> 0.6",
   plugin_spec_version: 1,
-  description: "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP profiles",
+  description:
+    "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP — plus BLE (Low Energy): central scan/advertise + GATT peripheral",
   # Per-app config this plugin reads at build time (opt-in background BLE).
   host_config_keys: [:ble_background_modes],
   nifs: [
-    # Android: lang: :zig routes this through -Dplugin_zig_nifs + addZigObject.
-    # :module is the C/Erlang NIF name; the source's `mob_bluetooth_nif_nif_init`
-    # export is the static init symbol the generated driver table references.
-    # platform: :android so it isn't pulled into the iOS build.
+    # Android: zig NIF under this module — Classic bt_* (incl. make_discoverable)
+    # plus the LE GATT-peripheral ble_* (ble_start_advertising/notify) bridging
+    # to the Kotlin MobBluetoothBridge. lang: :zig routes through
+    # -Dplugin_zig_nifs + addZigObject; `mob_bluetooth_nif_nif_init` is the
+    # static init symbol. platform: :android so the iOS build skips it.
     %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android},
-    # iOS: the same NIF module name, but the ObjC CoreBluetooth implementation
-    # (ble_* — a BLE surface; iOS has no classic-BT API). platform: :ios so the
-    # Android build skips it. The two share the Erlang stub module
-    # (src/mob_bluetooth_nif.erl); each platform's NIF provides only its own
-    # functions and the Elixir layer gates calls per platform.
+    # iOS: same NIF module name, ObjC over CoreBluetooth — the central
+    # scan/advertise surface (ble_scan/ble_advertise) AND the GATT-peripheral
+    # surface (ble_start_advertising/notify, CBPeripheralManager). iOS has no
+    # classic-BT API, so only ble_* live here. platform: :ios so Android skips
+    # it; the two share the erl stub and the Elixir layer gates per platform.
     %{module: :mob_bluetooth_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios}
   ],
   # Runtime permission capability — Android-only (BT Classic is unsupported on
@@ -70,11 +72,18 @@ ios_plist_keys =
   ],
   android: %{
     permissions: [
+      # Android 12+ (API 31+) Nearby-devices runtime permissions.
       "android.permission.BLUETOOTH_CONNECT",
       "android.permission.BLUETOOTH_SCAN",
-      # make_discoverable fires ACTION_REQUEST_DISCOVERABLE, which needs
-      # BLUETOOTH_ADVERTISE on Android 12+.
+      # Android 12+ (API 31+): make_discoverable's ACTION_REQUEST_DISCOVERABLE
+      # and LE peripheral advertising (MobBluetooth.Le) both need this.
       "android.permission.BLUETOOTH_ADVERTISE",
+      # Legacy install-time permissions for API <= 30 (Android 11 and below):
+      # BLUETOOTH gates adapter state / GATT, BLUETOOTH_ADMIN gates
+      # discovery + LE advertising. Auto-granted; ignored on API 31+. Without
+      # these, adapter.isEnabled throws SecurityException on Android 11.
+      "android.permission.BLUETOOTH",
+      "android.permission.BLUETOOTH_ADMIN",
       # Discovery (startDiscovery) returns scan results only with location access.
       "android.permission.ACCESS_FINE_LOCATION"
     ],
@@ -90,8 +99,8 @@ ios_plist_keys =
     bridge_class: "io.mob.bluetooth.MobBluetoothBridge"
   },
   ios: %{
-    # CoreBluetooth for the ble_* surface (CBCentralManager scan +
-    # CBPeripheralManager advertise).
+    # CoreBluetooth for the ble_* surface: CBCentralManager scan +
+    # CBPeripheralManager advertise (name) + GATT peripheral (service/notify).
     frameworks: ["CoreBluetooth"],
     plist_keys: ios_plist_keys
   }

@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+- **BLE GATT peripheral role (`MobBluetooth.Le`).** Building on the 0.2.0 BLE
+  central/advertise surface, this adds the *peripheral* role: run a GATT server,
+  advertise a **service** with characteristics, push notifications to subscribed
+  centrals, and receive writes — i.e. present the phone as a BLE accessory
+  (sensor, BLE-MIDI peripheral) that a computer or another phone connects to and
+  exchanges data with. API: `MobBluetooth.Le.start_advertising/2`,
+  `stop_advertising/1`, `notify/3`; events tagged `:bt_le`
+  (`:advertising_started`/`:advertising_failed`, `:central_connected`/
+  `:central_disconnected`, `:subscribed`/`:unsubscribed`, `:write`).
+- **Cross-platform** (unlike the iOS-only `ble_scan`/`ble_advertise` surface):
+  `BluetoothGattServer` + `BluetoothLeAdvertiser` on Android, `CBPeripheralManager`
+  GATT server on iOS — added to the existing `mob_bluetooth_nif`. Adds the legacy
+  `BLUETOOTH` / `BLUETOOTH_ADMIN` permissions for API <= 30. Device-verified
+  end-to-end on Android (Moto G power) and iOS (iPhone SE) driving a BLE-MIDI
+  peripheral (mob_midi) that a Mac receives as live MIDI, both directions.
+
+---
+
 ## [0.2.2] - 2026-06-24
 
 ### Changed
