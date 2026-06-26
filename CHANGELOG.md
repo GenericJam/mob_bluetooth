@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.3.0] - 2026-06-26
 
 ### Added
 - **BLE GATT peripheral role (`MobBluetooth.Le`).** Building on the 0.2.0 BLE
