@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Bluetooth Low Energy — GATT peripheral role (`MobBluetooth.Le`).** The phone
+  can now run a GATT server, advertise a service, push notifications to
+  subscribed centrals, and receive writes — i.e. present itself as a BLE device
+  (sensor, accessory, BLE-MIDI peripheral) that a computer or another phone
+  connects to. API: `start_advertising/2`, `stop_advertising/1`, `notify/3`;
+  events tagged `:bt_le` (`:advertising_started` / `:advertising_failed`,
+  `:central_connected` / `:central_disconnected`, `:subscribed` /
+  `:unsubscribed`, `:write`).
+- **First iOS native for this plugin.** BLE needs no MFi (unlike Classic), so
+  `MobBluetooth.Le` is **cross-platform**: `CBPeripheralManager` on iOS
+  (new `priv/native/ios/mob_bluetooth_nif.m`, `CoreBluetooth` framework),
+  `BluetoothGattServer` + `BluetoothLeAdvertiser` on Android. Adds the
+  `BLUETOOTH_ADVERTISE` permission (Android 12+).
+
+  Scope: peripheral / GATT-server only. BLE **central** (scanning for and
+  connecting to other peripherals) is a separate, future addition. The iOS
+  central connect/disconnect events are approximated from subscribe/unsubscribe
+  (CoreBluetooth's peripheral role exposes no raw connection callback).
+
+---
+
 ## [0.1.1] - 2026-06-16
 
 ### Changed

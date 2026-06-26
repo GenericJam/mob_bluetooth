@@ -2,17 +2,36 @@
   name: :mob_bluetooth,
   mob_version: "~> 0.6",
   plugin_spec_version: 1,
-  description: "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP profiles",
+  description:
+    "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP — plus BLE (Low Energy) GATT peripheral",
   nifs: [
-    # lang: :zig routes this through -Dplugin_zig_nifs + addZigObject. :module
-    # is the C/Erlang NIF name; the source's `mob_bluetooth_nif_nif_init` export
-    # is the static init symbol the generated driver table references.
-    %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig}
+    # Android: zig NIF (Classic bt_* + LE ble_*) bridging to the Kotlin
+    # MobBluetoothBridge. lang: :zig routes this through -Dplugin_zig_nifs +
+    # addZigObject. :module is the C/Erlang NIF name; the source's
+    # `mob_bluetooth_nif_nif_init` export is the static init symbol the
+    # generated driver table references. platform: :android so the iOS build
+    # skips it.
+    %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android},
+    # iOS: ObjC NIF over CoreBluetooth (CBPeripheralManager) — the plugin's
+    # first iOS native. Registers ONLY the LE ble_* functions under the same
+    # erl module (Classic bt_* is MFi-gated and short-circuits to :unsupported
+    # in Elixir before reaching the NIF). platform: :ios so Android skips it; a
+    # same-module objc+zig pair is not a collision (see MOB_PLUGINS.md).
+    %{module: :mob_bluetooth_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios}
   ],
   android: %{
     permissions: [
+      # Android 12+ (API 31+) Nearby-devices runtime permissions.
       "android.permission.BLUETOOTH_CONNECT",
       "android.permission.BLUETOOTH_SCAN",
+      # BLE peripheral advertising (MobBluetooth.Le) on Android 12+ (API 31+).
+      "android.permission.BLUETOOTH_ADVERTISE",
+      # Legacy install-time permissions for API <= 30 (Android 11 and below):
+      # BLUETOOTH gates adapter state / GATT, BLUETOOTH_ADMIN gates
+      # discovery + LE advertising. Auto-granted; ignored on API 31+. Without
+      # these, adapter.isEnabled throws SecurityException on Android 11.
+      "android.permission.BLUETOOTH",
+      "android.permission.BLUETOOTH_ADMIN",
       # Discovery (startDiscovery) returns scan results only with location access.
       "android.permission.ACCESS_FINE_LOCATION"
     ],
@@ -28,9 +47,12 @@
     bridge_class: "io.mob.bluetooth.MobBluetoothBridge"
   },
   ios: %{
+    # CoreBluetooth (CBPeripheralManager) for the LE peripheral NIF. Linked at
+    # the iOS static-link step.
+    frameworks: ["CoreBluetooth"],
     plist_keys: %{
       NSBluetoothAlwaysUsageDescription:
-        "Bluetooth access is required to discover and pair external devices."
+        "Bluetooth access is required to discover and pair external devices, and to advertise as a Bluetooth LE peripheral."
     }
   }
 }
