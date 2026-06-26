@@ -28,21 +28,34 @@ package io.mob.bluetooth
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattServer
+import android.bluetooth.BluetoothGattServerCallback
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONArray
 import org.json.JSONObject
 
 object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermissionProvider {
@@ -115,6 +128,17 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   @JvmStatic external fun nativeDeliverBtSppWritten(pid: Long, session: Int, size: Int)
   @JvmStatic external fun nativeDeliverBtSppError(pid: Long, session: Int, reason: String)
 
+  // ── Mob.Bt — BLE (Low Energy) GATT-peripheral delivery externs ───────────
+  // Resolve to the same sibling mob_bluetooth_jni.c thunks; each posts back to
+  // the {:bt_le, ...} channel via the zig mob_deliver_ble_* exports.
+  @JvmStatic external fun nativeDeliverBleAdvertisingStarted(pid: Long)
+  @JvmStatic external fun nativeDeliverBleAdvertisingFailed(pid: Long, reason: String)
+  @JvmStatic external fun nativeDeliverBleCentralConnected(pid: Long, central: Int)
+  @JvmStatic external fun nativeDeliverBleCentralDisconnected(pid: Long, central: Int)
+  @JvmStatic external fun nativeDeliverBleSubscribed(pid: Long, characteristic: String)
+  @JvmStatic external fun nativeDeliverBleUnsubscribed(pid: Long, characteristic: String)
+  @JvmStatic external fun nativeDeliverBleWrite(pid: Long, characteristic: String, bytes: ByteArray)
+
   // ── BT companion state ───────────────────────────────────────────────────
   private val btSessionMap = ConcurrentHashMap<Int, BluetoothDevice>()
   private val btSessionCounter = AtomicInteger(1)
@@ -129,6 +153,29 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   private val btSppReadThreads = ConcurrentHashMap<Int, Thread>()
 
   private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+
+  // ── BLE (Low Energy) GATT-peripheral state ───────────────────────────────
+  // Some Android BLE calls (openGattServer / advertiser start) misbehave off
+  // the main thread on certain OEM stacks, so GATT-server setup + advertising
+  // start run on `main`, mirroring the sibling mob_midi plugin.
+  private val main = Handler(Looper.getMainLooper())
+
+  // Standard Client Characteristic Configuration Descriptor — a central writes
+  // this to subscribe/unsubscribe to notifications/indications.
+  private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
+
+  private var bleGattServer: BluetoothGattServer? = null
+  private var bleAdvertiser: BluetoothLeAdvertiser? = null
+  private var bleAdvertiseCallback: AdvertiseCallback? = null
+  private var bleAdvertisingPid: Long = 0
+  // Characteristics built for the running service, keyed by uppercase UUID
+  // string, so ble_notify can look them up to push a new value.
+  private val bleCharacteristics = ConcurrentHashMap<String, BluetoothGattCharacteristic>()
+  // Connected centrals: device.address -> opaque incrementing Int handle.
+  private val bleCentrals = ConcurrentHashMap<String, Int>()
+  // Reverse: address -> BluetoothDevice, so notify can target each central.
+  private val bleDevices = ConcurrentHashMap<String, BluetoothDevice>()
+  private val bleCentralCounter = AtomicInteger(1)
 
   private fun btAdapter(): BluetoothAdapter? {
       val ctx = activityRef?.get() ?: return null
@@ -606,5 +653,330 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               nativeDeliverBtSppError(pid, session, "spp_write_failed")
           }
       }.start()
+  }
+
+  // ── BLE (Low Energy) GATT peripheral ─────────────────────────────────────
+  //
+  // Stand up a BluetoothGattServer hosting one service + its characteristics,
+  // then advertise the service UUID + local name via BluetoothLeAdvertiser.
+  // Central connections, CCCD subscribes, and incoming writes route back to the
+  // owning pid through the nativeDeliverBle* thunks. All results are async —
+  // these @JvmStatic entrypoints return :ok-equivalent (void) immediately and
+  // never throw out (every risky call is wrapped, mirroring the bt_* methods).
+
+  /// Resolve the BluetoothLeAdvertiser, or null with no side effect. Caller is
+  /// responsible for delivering the appropriate failure reason.
+  private fun bleAdvertiserOrNull(): BluetoothLeAdvertiser? {
+      val adapter = btAdapter() ?: return null
+      if (!adapter.isEnabled) return null
+      return try { adapter.bluetoothLeAdvertiser } catch (_: SecurityException) { null }
+  }
+
+  /// Map a property string to its PROPERTY_* flag (0 if unrecognised).
+  private fun blePropertyFlag(prop: String): Int = when (prop) {
+      "read" -> BluetoothGattCharacteristic.PROPERTY_READ
+      "write" -> BluetoothGattCharacteristic.PROPERTY_WRITE
+      "write_without_response" -> BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
+      "notify" -> BluetoothGattCharacteristic.PROPERTY_NOTIFY
+      "indicate" -> BluetoothGattCharacteristic.PROPERTY_INDICATE
+      else -> 0
+  }
+
+  /// Map a property string to its PERMISSION_* flag (0 if it grants no perm;
+  /// notify/indicate are pushed by the server so need no characteristic perm).
+  private fun blePermissionFlag(prop: String): Int = when (prop) {
+      "read" -> BluetoothGattCharacteristic.PERMISSION_READ
+      "write", "write_without_response" -> BluetoothGattCharacteristic.PERMISSION_WRITE
+      else -> 0
+  }
+
+  /// Map an AdvertiseCallback failure code to a short snake_case reason atom.
+  private fun bleAdvertiseFailureReason(errorCode: Int): String = when (errorCode) {
+      AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE -> "data_too_large"
+      AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too_many_advertisers"
+      AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED -> "already_started"
+      AdvertiseCallback.ADVERTISE_FAILED_INTERNAL_ERROR -> "internal_error"
+      AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "feature_unsupported"
+      else -> "advertise_failed_$errorCode"
+  }
+
+  /// The GATT-server callback: central connect/disconnect, CCCD subscribe, and
+  /// characteristic writes. Always answers responseNeeded requests with
+  /// GATT_SUCCESS so a central isn't left hanging.
+  private fun bleGattServerCallback(pid: Long) = object : BluetoothGattServerCallback() {
+      override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+          when (newState) {
+              BluetoothProfile.STATE_CONNECTED -> {
+                  val central = bleCentrals.getOrPut(device.address) {
+                      bleCentralCounter.getAndIncrement()
+                  }
+                  bleDevices[device.address] = device
+                  nativeDeliverBleCentralConnected(pid, central)
+              }
+              BluetoothProfile.STATE_DISCONNECTED -> {
+                  val central = bleCentrals.remove(device.address)
+                  bleDevices.remove(device.address)
+                  if (central != null) nativeDeliverBleCentralDisconnected(pid, central)
+              }
+          }
+      }
+
+      override fun onDescriptorWriteRequest(
+          device: BluetoothDevice,
+          requestId: Int,
+          descriptor: BluetoothGattDescriptor,
+          preparedWrite: Boolean,
+          responseNeeded: Boolean,
+          offset: Int,
+          value: ByteArray?
+      ) {
+          // Only the CCCD carries subscribe/unsubscribe intent.
+          if (descriptor.uuid == CCCD_UUID && value != null) {
+              val charUuid = descriptor.characteristic.uuid.toString().uppercase()
+              when {
+                  value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ||
+                      value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE) -> {
+                      // Track the subscribed central as a notify target HERE, not
+                      // only in onConnectionStateChange — that callback is
+                      // unreliable for the server role on some devices, and a
+                      // subscribed central is exactly who notify() should reach.
+                      bleDevices[device.address] = device
+                      bleCentrals.getOrPut(device.address) { bleCentralCounter.getAndIncrement() }
+                      nativeDeliverBleSubscribed(pid, charUuid)
+                  }
+                  value.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE) ->
+                      nativeDeliverBleUnsubscribed(pid, charUuid)
+              }
+          }
+          if (responseNeeded) {
+              try {
+                  bleGattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, value)
+              } catch (_: Exception) {}
+          }
+      }
+
+      override fun onCharacteristicWriteRequest(
+          device: BluetoothDevice,
+          requestId: Int,
+          characteristic: BluetoothGattCharacteristic,
+          preparedWrite: Boolean,
+          responseNeeded: Boolean,
+          offset: Int,
+          value: ByteArray?
+      ) {
+          val charUuid = characteristic.uuid.toString().uppercase()
+          nativeDeliverBleWrite(pid, charUuid, value ?: ByteArray(0))
+          if (responseNeeded) {
+              try {
+                  bleGattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, value)
+              } catch (_: Exception) {}
+          }
+      }
+  }
+
+  @JvmStatic
+  fun ble_start_advertising(pid: Long, json: String) {
+      // Probe for the prerequisites up front so we can deliver a precise reason.
+      // This runs on the calling (BEAM) thread, so adapter access — which can
+      // throw SecurityException when the Bluetooth permission isn't granted —
+      // MUST be guarded, or an uncaught throw kills the whole app process.
+      val ctx = activityRef?.get()
+          ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_adapter"); return }
+      val mgr = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+          ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_adapter"); return }
+
+      val ready = try {
+          val adapter = mgr.adapter
+              ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_adapter"); return }
+          when {
+              !adapter.isEnabled -> {
+                  nativeDeliverBleAdvertisingFailed(pid, "adapter_disabled"); false
+              }
+              !ctx.packageManager.hasSystemFeature(
+                  android.content.pm.PackageManager.FEATURE_BLUETOOTH_LE
+              ) -> {
+                  nativeDeliverBleAdvertisingFailed(pid, "ble_unsupported"); false
+              }
+              else -> true
+          }
+      } catch (e: SecurityException) {
+          nativeDeliverBleAdvertisingFailed(pid, "permission_denied"); false
+      } catch (e: Exception) {
+          nativeDeliverBleAdvertisingFailed(pid, "internal_error"); false
+      }
+
+      if (!ready) return
+
+      val spec = try { JSONObject(json) } catch (_: Exception) {
+          nativeDeliverBleAdvertisingFailed(pid, "bad_spec"); return
+      }
+      val localName = spec.optString("local_name").takeIf { it.isNotEmpty() }
+      val serviceUuidStr = spec.optString("service_uuid").takeIf { it.isNotEmpty() }
+          ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_service_uuid"); return }
+      val serviceUuid = try { UUID.fromString(serviceUuidStr) } catch (_: Exception) {
+          nativeDeliverBleAdvertisingFailed(pid, "bad_service_uuid"); return
+      }
+      val lowLatency = spec.optBoolean("low_latency", false)
+
+      // Build setup runs on the main thread (see `main` note above).
+      main.post {
+          try {
+              // Re-resolve the adapter here (the prerequisite probe above caught
+              // it in its own guarded scope). Safe under this try/catch.
+              val adapter = mgr.adapter
+                  ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_adapter"); return@post }
+
+              // Idempotent: tear down any prior server/advertiser before re-arming.
+              bleTeardown()
+              bleAdvertisingPid = pid
+
+              val server = mgr.openGattServer(ctx, bleGattServerCallback(pid))
+                  ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_gatt_server"); return@post }
+              bleGattServer = server
+
+              val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+              val chars = spec.optJSONArray("characteristics") ?: JSONArray()
+              for (i in 0 until chars.length()) {
+                  val cSpec = chars.optJSONObject(i) ?: continue
+                  val cUuidStr = cSpec.optString("uuid").takeIf { it.isNotEmpty() } ?: continue
+                  val cUuid = try { UUID.fromString(cUuidStr) } catch (_: Exception) { continue }
+
+                  val propsArr = cSpec.optJSONArray("properties") ?: JSONArray()
+                  var properties = 0
+                  var permissions = 0
+                  var notifiable = false
+                  for (j in 0 until propsArr.length()) {
+                      val prop = propsArr.optString(j)
+                      properties = properties or blePropertyFlag(prop)
+                      permissions = permissions or blePermissionFlag(prop)
+                      if (prop == "notify" || prop == "indicate") notifiable = true
+                  }
+
+                  val characteristic = BluetoothGattCharacteristic(cUuid, properties, permissions)
+                  // Notify/indicate characteristics need the standard CCCD so a
+                  // central can subscribe (read+write the config descriptor).
+                  if (notifiable) {
+                      val cccd = BluetoothGattDescriptor(
+                          CCCD_UUID,
+                          BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+                      )
+                      characteristic.addDescriptor(cccd)
+                  }
+                  service.addCharacteristic(characteristic)
+                  bleCharacteristics[cUuid.toString().uppercase()] = characteristic
+              }
+              server.addService(service)
+
+              val advertiser = adapter.bluetoothLeAdvertiser
+                  ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_advertiser"); bleTeardown(); return@post }
+              bleAdvertiser = advertiser
+
+              // Setting the GAP local name makes scanners show the friendly name.
+              if (localName != null) {
+                  try { adapter.name = localName } catch (_: Exception) {}
+              }
+
+              val settings = AdvertiseSettings.Builder()
+                  .setAdvertiseMode(
+                      if (lowLatency) AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+                      else AdvertiseSettings.ADVERTISE_MODE_BALANCED
+                  )
+                  .setConnectable(true)
+                  .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                  .setTimeout(0)
+                  .build()
+
+              // A 128-bit service UUID is 16 bytes, which alone nearly fills the
+              // 31-byte advertising packet — adding the device name too overflows
+              // it (ADVERTISE_FAILED_DATA_TOO_LARGE). So advertise ONLY the
+              // service UUID, and carry the friendly name in the separate 31-byte
+              // scan-response packet. (The GAP name set above is what a connected
+              // central ultimately reads anyway.)
+              val advData = AdvertiseData.Builder()
+                  .setIncludeDeviceName(false)
+                  .addServiceUuid(ParcelUuid(serviceUuid))
+                  .build()
+
+              val scanResponse = AdvertiseData.Builder()
+                  .setIncludeDeviceName(true)
+                  .build()
+
+              val callback = object : AdvertiseCallback() {
+                  override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+                      nativeDeliverBleAdvertisingStarted(pid)
+                  }
+                  override fun onStartFailure(errorCode: Int) {
+                      nativeDeliverBleAdvertisingFailed(pid, bleAdvertiseFailureReason(errorCode))
+                  }
+              }
+              bleAdvertiseCallback = callback
+              advertiser.startAdvertising(settings, advData, scanResponse, callback)
+          } catch (e: SecurityException) {
+              nativeDeliverBleAdvertisingFailed(pid, "permission_denied")
+              bleTeardown()
+          } catch (e: Exception) {
+              Log.e("MobBT", "ble_start_advertising failed: ${e.javaClass.simpleName}: ${e.message}", e)
+              nativeDeliverBleAdvertisingFailed(pid, "internal_error")
+              bleTeardown()
+          }
+      }
+  }
+
+  @JvmStatic
+  fun ble_stop_advertising(pid: Long) {
+      // Idempotent: safe to call with nothing running.
+      main.post {
+          try { bleTeardown() } catch (_: Exception) {}
+      }
+  }
+
+  /// Tear down advertiser + GATT server + central state. Must tolerate being
+  /// called when nothing is up (idempotent). Run on `main` by callers.
+  private fun bleTeardown() {
+      val advertiser = bleAdvertiser
+      val callback = bleAdvertiseCallback
+      if (advertiser != null && callback != null) {
+          try { advertiser.stopAdvertising(callback) } catch (_: Exception) {}
+      }
+      bleAdvertiseCallback = null
+      bleAdvertiser = null
+
+      bleGattServer?.let { server ->
+          // Disconnect any connected centrals, then close.
+          for (device in bleDevices.values) {
+              try { server.cancelConnection(device) } catch (_: Exception) {}
+          }
+          try { server.close() } catch (_: Exception) {}
+      }
+      bleGattServer = null
+      bleCharacteristics.clear()
+      bleCentrals.clear()
+      bleDevices.clear()
+      bleAdvertisingPid = 0
+  }
+
+  @JvmStatic
+  fun ble_notify(pid: Long, charUuid: String, bytes: ByteArray) {
+      val server = bleGattServer ?: return
+      val characteristic = bleCharacteristics[charUuid.uppercase()] ?: return
+      if (bleDevices.isEmpty()) return
+      val isIndicate =
+          (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
+      try {
+          for (device in bleDevices.values) {
+              if (Build.VERSION.SDK_INT >= 33) {
+                  // Android 13+ takes the value explicitly (no shared mutable state).
+                  server.notifyCharacteristicChanged(device, characteristic, isIndicate, bytes)
+              } else {
+                  @Suppress("DEPRECATION")
+                  characteristic.value = bytes
+                  @Suppress("DEPRECATION")
+                  server.notifyCharacteristicChanged(device, characteristic, isIndicate)
+              }
+          }
+      } catch (_: SecurityException) {
+          // Missing BLUETOOTH_CONNECT — best-effort, drop silently.
+      } catch (_: Exception) {
+      }
   }
 }
