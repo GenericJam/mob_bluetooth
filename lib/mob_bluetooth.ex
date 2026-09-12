@@ -222,6 +222,11 @@ defmodule MobBluetooth do
   PIN). With `:pin`, attempts programmatic pairing using the supplied
   PIN; falls back to system UI if the device demands user confirmation.
 
+  Per the Bluetooth spec, PINs are ASCII digits — a Unicode string
+  works, but non-ASCII bytes are encoded as UTF-8 and the peer will
+  reject them silently. Stick to `"0000"`, `"1234"`, or the digit
+  string printed on the device.
+
   Result arrives as one of:
 
     * `{:bt, :paired, device}`

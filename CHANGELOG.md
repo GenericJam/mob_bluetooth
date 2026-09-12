@@ -10,6 +10,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Android: `MobBluetooth.pair(socket, device, pin: "0000")` actually
+  answers the pairing prompt now** (MOB-61). The Elixir side has
+  documented programmatic PIN pairing for years
+  (`lib/mob_bluetooth.ex:98-107,221-224`), but the Kotlin `bt_pair`
+  read only `optString("address")` from the JSON — the `pin` field
+  was dropped and the user got the system pairing dialog anyway. A
+  new `ACTION_PAIRING_REQUEST` receiver, armed once when a caller
+  supplies a `:pin`, calls `device.setPin(pin.toByteArray(UTF_8))`
+  for `PAIRING_VARIANT_PIN` requests and `abortBroadcast()`s the
+  system UI receiver. Passkey confirmation and OOB variants still
+  fall through to the system dialog (they need a human).
+  `setActivity` swap resets all lifecycle-owned receivers so a fresh
+  Activity re-arms cleanly.
+
+
 - **Android: HFP now emits `:bt_hfp, :connected` for newly-initiated
   connects and `:bt_hfp, :disconnected` for local + remote hang-ups**
   (MOB-63 + MOB-64). The pre-fix `bt_hfp_connect` only ever emitted
