@@ -26,4 +26,20 @@ defmodule MobBluetooth.HfpTest do
              }
     end
   end
+
+  # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+  test "HFP connection events narrow the broadcast device to non-null" do
+    bridge =
+      Path.join([__DIR__, "..", "..", "priv", "native", "android", "MobBluetoothBridge.kt"])
+      |> File.read!()
+
+    [_, receiver_and_after] =
+      String.split(bridge, "private fun ensureHfpConnectionReceiver", parts: 2)
+
+    [receiver_source, _] =
+      String.split(receiver_and_after, "fun bt_hfp_connect", parts: 2)
+
+    assert receiver_source =~ "val device = if (Build.VERSION.SDK_INT >= 33)"
+    refute receiver_source =~ "val device: BluetoothDevice?"
+  end
 end

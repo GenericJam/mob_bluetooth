@@ -552,7 +552,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       btHfpConnectionReceiver = object : BroadcastReceiver() {
           override fun onReceive(ctx: Context, intent: Intent) {
               if (intent.action != BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) return
-              val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+              val device = if (Build.VERSION.SDK_INT >= 33) {
                   intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
               } else {
                   @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
