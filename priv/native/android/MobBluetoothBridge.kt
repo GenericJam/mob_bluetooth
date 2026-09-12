@@ -82,6 +82,18 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   // accessor is needed.
   override fun setActivity(activity: Activity) {
     activityRef = WeakReference(activity)
+    // MOB-61: Activity swap invalidates receivers registered against the
+    // old Context. Drop the receiver reference so `armPinPairingResponse`
+    // re-arms on the fresh Activity next pair attempt. `btBondReceiver`,
+    // `btHfpConnectionReceiver`, `btHfpVendorReceiver`, `btDiscoveryReceiver`
+    // have the same latent shape — resetting them here keeps the whole
+    // set consistent. Mob's MainActivity is app-lifetime today, so this
+    // path is mostly defensive.
+    btPairingRequestReceiver = null
+    btBondReceiver = null
+    btHfpConnectionReceiver = null
+    btHfpVendorReceiver = null
+    btDiscoveryReceiver = null
   }
 
   // MobPermissionProvider: route the :bluetooth_connect capability to the whole
@@ -146,6 +158,16 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   private var btDiscoveryPid: Long = 0
   private var btBondReceiver: BroadcastReceiver? = null
   private val btBondPids = ConcurrentHashMap<String, Long>()
+  // MOB-61: caller-supplied PINs, keyed by device MAC. The
+  // ACTION_PAIRING_REQUEST receiver reads this map and, when the
+  // system asks the app to answer a PIN prompt for a device we have
+  // a PIN for, calls `device.setPin(pin)` — auto-answering without
+  // showing the system dialog. Cleared when the bond transitions
+  // to BONDED or NONE.
+  private val btBondPins = ConcurrentHashMap<String, String>()
+  // One-shot receiver for the plugin lifetime; only fires when at
+  // least one entry is in `btBondPins`.
+  private var btPairingRequestReceiver: BroadcastReceiver? = null
   private var btHfpProxy: BluetoothHeadset? = null
   private val btHfpVendorPids = ConcurrentHashMap<Int, Long>()
   private var btHfpVendorReceiver: BroadcastReceiver? = null
@@ -364,15 +386,24 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   fun bt_pair(pid: Long, json: String) {
       val adapter = btAdapter() ?: run { nativeDeliverBtError(pid, "no_adapter"); return }
       val activity = activityRef?.get() ?: run { nativeDeliverBtError(pid, "no_activity"); return }
-      val mac = try { JSONObject(json).optString("address").takeIf { it.isNotEmpty() } }
-                catch (_: Exception) { null }
+      val parsed = try { JSONObject(json) } catch (_: Exception) { null }
+      val mac = parsed?.optString("address")?.takeIf { it.isNotEmpty() }
           ?: run { nativeDeliverBtError(pid, "no_address"); return }
+      // MOB-61: when `:pin` is supplied, arm the ACTION_PAIRING_REQUEST
+      // receiver so Android's PIN prompt is auto-answered with the supplied
+      // string instead of showing the system dialog. Documented in
+      // `MobBluetooth.pair/3` for years but never actually wired.
+      val pin = parsed?.optString("pin")?.takeIf { it.isNotEmpty() }
       val device = try { adapter.getRemoteDevice(mac) }
                    catch (_: Exception) { nativeDeliverBtError(pid, "invalid_address"); return }
 
       if (device.bondState == BluetoothDevice.BOND_BONDED) {
           nativeDeliverBtPaired(pid, device.address, btSafeName(device), true)
           return
+      }
+
+      if (pin != null) {
+          armPinPairingResponse(activity, device.address, pin)
       }
 
       if (btBondReceiver == null) {
@@ -390,10 +421,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       BluetoothDevice.BOND_BONDED -> {
                           nativeDeliverBtPaired(waitingPid, dev.address, btSafeName(dev), true)
                           btBondPids.remove(dev.address)
+                          btBondPins.remove(dev.address)
                       }
                       BluetoothDevice.BOND_NONE -> {
                           nativeDeliverBtPairFailed(waitingPid, dev.address, "bond_none")
                           btBondPids.remove(dev.address)
+                          btBondPins.remove(dev.address)
                       }
                   }
               }
@@ -411,11 +444,94 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       try {
           if (!device.createBond()) {
               btBondPids.remove(device.address)
+              btBondPins.remove(device.address)
               nativeDeliverBtPairFailed(pid, device.address, "create_bond_failed")
           }
       } catch (e: SecurityException) {
           btBondPids.remove(device.address)
+          btBondPins.remove(device.address)
           nativeDeliverBtPairFailed(pid, device.address, "permission_denied")
+      }
+  }
+
+  // MOB-61: register the ACTION_PAIRING_REQUEST receiver (once, plugin
+  // lifetime) and stash the PIN. When the receiver fires for our device
+  // and Android asks for a PIN variant, it answers with `device.setPin`
+  // and aborts the system broadcast so no dialog appears. For other
+  // variants (passkey confirmation, out-of-band) we can't answer
+  // programmatically — pass through to the system UI and let the user
+  // confirm.
+  //
+  // Requires BLUETOOTH_ADMIN (pre-31) or BLUETOOTH_CONNECT (31+).
+  // setPin returns false if either the permission was denied or the
+  // remote device rejected the PIN; in either case the bond state
+  // receiver will surface :pair_failed with "bond_none" as before.
+  private fun armPinPairingResponse(activity: Activity, address: String, pin: String) {
+      btBondPins[address] = pin
+      if (btPairingRequestReceiver != null) return
+
+      btPairingRequestReceiver = object : BroadcastReceiver() {
+          override fun onReceive(ctx: Context, intent: Intent) {
+              if (intent.action != BluetoothDevice.ACTION_PAIRING_REQUEST) return
+              val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                  intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+              } else {
+                  @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+              }
+              if (dev == null) return
+              val storedPin = btBondPins[dev.address] ?: return
+              val variant = intent.getIntExtra(
+                  BluetoothDevice.EXTRA_PAIRING_VARIANT,
+                  BluetoothDevice.ERROR,
+              )
+              if (variant != BluetoothDevice.PAIRING_VARIANT_PIN) return
+              try {
+                  val ok = dev.setPin(storedPin.toByteArray(Charsets.UTF_8))
+                  if (ok) {
+                      // Suppress the system PIN dialog for this pairing
+                      // request; the bond-state receiver still fires for
+                      // the eventual outcome. abortBroadcast() throws
+                      // IllegalStateException if some OEM stack delivered
+                      // the broadcast as non-ordered — catch below so a
+                      // quirky handset can't take the scheduler thread
+                      // down.
+                      abortBroadcast()
+                  } else {
+                      Log.w(
+                          "MobBluetooth",
+                          "setPin returned false for ${dev.address} — falling through to system dialog",
+                      )
+                  }
+              } catch (e: Throwable) {
+                  // SecurityException = permission denied.
+                  // IllegalStateException = broadcast wasn't ordered.
+                  // Either way, fall through to the system dialog — the
+                  // bond-state receiver still surfaces the outcome.
+                  Log.w(
+                      "MobBluetooth",
+                      "PIN pairing auto-answer failed for ${dev.address}: ${e.javaClass.simpleName}",
+                  )
+              }
+          }
+      }
+
+      val filter = IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST).apply {
+          // ACTION_PAIRING_REQUEST is an ordered broadcast — a higher-
+          // priority receiver gets it before Android's built-in
+          // system-UI receiver, and abortBroadcast() prevents that
+          // receiver from ever running (thus no dialog).
+          //
+          // AOSP's Settings BluetoothPairingRequest receiver ships with
+          // `android:priority="1"`, so any positive value beats it. There is
+          // no runtime cap on manifestless (runtime-registered) filters, so
+          // Int.MAX_VALUE just makes the ordering explicit.
+          priority = Int.MAX_VALUE
+      }
+      if (Build.VERSION.SDK_INT >= 33) {
+          activity.registerReceiver(btPairingRequestReceiver, filter, Context.RECEIVER_EXPORTED)
+      } else {
+          @Suppress("UnspecifiedRegisterReceiverFlag")
+          activity.registerReceiver(btPairingRequestReceiver, filter)
       }
   }
 
