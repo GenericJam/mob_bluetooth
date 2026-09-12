@@ -684,7 +684,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       "android.bluetooth.headset.extra.VENDOR_SPECIFIC_HEADSET_EVENT_ARGS")
                   if (dev == null || cmd == null) return
                   val devSession = btSessionMap.entries.firstOrNull { it.value.address == dev.address }?.key
-                      ?: btSessionFor(dev)
+                      ?: return
                   val deliveryPid = btHfpVendorPids[devSession] ?: return
                   nativeDeliverBtHfpVendorAt(deliveryPid, devSession,
                       cmd, cmdType,
