@@ -42,4 +42,20 @@ defmodule MobBluetooth.HfpTest do
     assert receiver_source =~ "val device = if (Build.VERSION.SDK_INT >= 33)"
     refute receiver_source =~ "val device: BluetoothDevice?"
   end
+
+  # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+  test "vendor AT events cannot allocate sessions for unknown devices" do
+    bridge =
+      Path.join([__DIR__, "..", "..", "priv", "native", "android", "MobBluetoothBridge.kt"])
+      |> File.read!()
+
+    known_session_guard =
+      Regex.compile!(
+        "val devSession = btSessionMap\\.entries\\.firstOrNull \\{ it\\.value\\.address == dev\\.address \\}\\?\\.key\\s+\\?: return"
+      )
+
+    assert bridge =~ known_session_guard
+
+    refute bridge =~ "?: btSessionFor(dev)"
+  end
 end
