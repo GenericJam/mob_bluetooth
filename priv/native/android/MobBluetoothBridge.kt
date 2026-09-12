@@ -81,19 +81,40 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   // (instance dispatch) from the generated bootstrap's handOff, so no static
   // accessor is needed.
   override fun setActivity(activity: Activity) {
-    activityRef = WeakReference(activity)
-    // MOB-61: Activity swap invalidates receivers registered against the
-    // old Context. Drop the receiver reference so `armPinPairingResponse`
-    // re-arms on the fresh Activity next pair attempt. `btBondReceiver`,
-    // `btHfpConnectionReceiver`, `btHfpVendorReceiver`, `btDiscoveryReceiver`
-    // have the same latent shape — resetting them here keeps the whole
-    // set consistent. Mob's MainActivity is app-lifetime today, so this
-    // path is mostly defensive.
+    // MOB-61: Activity swap requires unregistering lifecycle-owned
+    // receivers from the outgoing Context BEFORE nulling the fields —
+    // otherwise the old receiver stays wired to the old Activity while
+    // the next connect allocates a fresh one on the new Activity, and
+    // every event fires twice against the same shared maps. Discovery
+    // cancel (`btDiscoveryReceiver?.let { ... }`) would also silently
+    // no-op because the reference was nulled while the actual receiver
+    // still lived on the old Context. Pre-merge review caught this on
+    // the MOB-61 PR. mob's MainActivity is app-lifetime today so this
+    // is mostly defensive, but the receivers are what makes the path
+    // executable — do it correctly.
+    val previous = activityRef?.get()
+    if (previous != null) {
+      listOfNotNull(
+          btPairingRequestReceiver,
+          btBondReceiver,
+          btHfpConnectionReceiver,
+          btHfpVendorReceiver,
+          btDiscoveryReceiver,
+      ).forEach { r ->
+        try {
+          previous.unregisterReceiver(r)
+        } catch (_: Throwable) {
+          // "receiver not registered" if the Activity teardown already
+          // pulled it — either way we drop the reference below.
+        }
+      }
+    }
     btPairingRequestReceiver = null
     btBondReceiver = null
     btHfpConnectionReceiver = null
     btHfpVendorReceiver = null
     btDiscoveryReceiver = null
+    activityRef = WeakReference(activity)
   }
 
   // MobPermissionProvider: route the :bluetooth_connect capability to the whole
@@ -404,6 +425,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
 
       if (pin != null) {
           armPinPairingResponse(activity, device.address, pin)
+      } else {
+          // A previous pair attempt that never terminated could have left
+          // an entry for this MAC in btBondPins. Clear it — otherwise a
+          // pin-less pair for the same device would silently auto-answer
+          // with the STALE pin (pre-merge review catch).
+          btBondPins.remove(device.address)
       }
 
       if (btBondReceiver == null) {
@@ -502,11 +529,13 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                           "setPin returned false for ${dev.address} — falling through to system dialog",
                       )
                   }
-              } catch (e: Throwable) {
+              } catch (e: RuntimeException) {
                   // SecurityException = permission denied.
-                  // IllegalStateException = broadcast wasn't ordered.
-                  // Either way, fall through to the system dialog — the
-                  // bond-state receiver still surfaces the outcome.
+                  // IllegalStateException = broadcast wasn't ordered on
+                  // some OEM stack. Either way, fall through to the
+                  // system dialog — the bond-state receiver still
+                  // surfaces the outcome. Kept narrower than Throwable so
+                  // OOM / StackOverflow etc. still propagate.
                   Log.w(
                       "MobBluetooth",
                       "PIN pairing auto-answer failed for ${dev.address}: ${e.javaClass.simpleName}",
