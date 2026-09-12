@@ -6,6 +6,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Android: JNI exception no longer leaks onto the BEAM scheduler thread**
+  (MOB-62). The zig NIF had zero `ExceptionCheck`/`ExceptionClear` calls,
+  which meant a `SecurityException` raised by any Kotlin bridge method
+  (BLUETOOTH_CONNECT/SCAN/ADVERTISE permission gap on Android 12+) or a
+  `NoSuchMethodError` from an older/stripped bridge would linger on the
+  JNIEnv. The next JNI call on the same BEAM scheduler thread was then
+  undefined behaviour per the JNI spec.
+
+  Fix mirrors mob core's `mob_ui_cache_class` pattern (see
+  `mob/android/jni/mob_nif.zig`):
+  - `nativeRegister` now caches every method through a new `cacheMethod`
+    helper that clears any pending exception on a null return.
+  - Every `CallStaticVoidMethod` site (13 direct + 1 in `callBridgePidStr`,
+    which fans out to 5 more via `bt_pair` / `bt_unpair` / `bt_hfp_connect`
+    / `bt_spp_connect` / `ble_start_advertising`) calls
+    `jni.exceptionClear(jenv)` immediately after the call — the JNI spec
+    guarantees the clear is a no-op if no exception is pending.
+
+  Existing runtime NIFs already guarded on a missing method-id cache via
+  `if (g_bt.<method> == null) return btUnsupported(env);`, so the `:unsupported`
+  path continues to work. Return-type contracts are unchanged; no public
+  API change. iOS path is untouched.
+
+---
+
 ## [0.3.0] - 2026-06-26
 
 ### Added

@@ -64,26 +64,42 @@ var g_bt_cls: jni.JClass = null;
 // Resolved by name from the loaded .so (zig `export fn` emits the C-ABI
 // symbol). Signatures come from the bt cacheOptional block in mob-core's
 // nif_load.
+//
+// A missing method leaves a `NoSuchMethodError` pending on the JNIEnv;
+// `cacheMethod` clears it so subsequent lookups aren't shadowed by a stale
+// pending exception (matches mob core's `mob_ui_cache_class` pattern). See
+// MOB-62.
+inline fn cacheMethod(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    name: [*:0]const u8,
+    sig: [*:0]const u8,
+) jni.JMethodID {
+    const m = jni.getStaticMethodID(jenv, cls, name, sig);
+    if (m == null) jni.exceptionClear(jenv);
+    return m;
+}
+
 export fn Java_io_mob_bluetooth_MobBluetoothBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_bt_cls = jni.newGlobalRef(jenv, cls);
     if (g_bt_cls == null) return;
-    g_bt.list_paired = jni.getStaticMethodID(jenv, cls, "bt_list_paired", "(J)V");
-    g_bt.start_discovery = jni.getStaticMethodID(jenv, cls, "bt_start_discovery", "(J)V");
-    g_bt.cancel_discovery = jni.getStaticMethodID(jenv, cls, "bt_cancel_discovery", "(J)V");
-    g_bt.make_discoverable = jni.getStaticMethodID(jenv, cls, "bt_make_discoverable", "(JI)V");
-    g_bt.pair = jni.getStaticMethodID(jenv, cls, "bt_pair", "(JLjava/lang/String;)V");
-    g_bt.unpair = jni.getStaticMethodID(jenv, cls, "bt_unpair", "(JLjava/lang/String;)V");
-    g_bt.disconnect = jni.getStaticMethodID(jenv, cls, "bt_disconnect", "(JI)V");
-    g_bt.hfp_connect = jni.getStaticMethodID(jenv, cls, "bt_hfp_connect", "(JLjava/lang/String;)V");
-    g_bt.hfp_subscribe_vendor_at = jni.getStaticMethodID(jenv, cls, "bt_hfp_subscribe_vendor_at", "(JILjava/lang/String;)V");
-    g_bt.hfp_send_vendor_at = jni.getStaticMethodID(jenv, cls, "bt_hfp_send_vendor_at", "(JILjava/lang/String;Ljava/lang/String;)V");
-    g_bt.hfp_start_sco = jni.getStaticMethodID(jenv, cls, "bt_hfp_start_sco", "(JI)V");
-    g_bt.hfp_stop_sco = jni.getStaticMethodID(jenv, cls, "bt_hfp_stop_sco", "(JI)V");
-    g_bt.spp_connect = jni.getStaticMethodID(jenv, cls, "bt_spp_connect", "(JLjava/lang/String;)V");
-    g_bt.spp_write = jni.getStaticMethodID(jenv, cls, "bt_spp_write", "(JI[B)V");
-    g_bt.ble_start_advertising = jni.getStaticMethodID(jenv, cls, "ble_start_advertising", "(JLjava/lang/String;)V");
-    g_bt.ble_stop_advertising = jni.getStaticMethodID(jenv, cls, "ble_stop_advertising", "(J)V");
-    g_bt.ble_notify = jni.getStaticMethodID(jenv, cls, "ble_notify", "(JLjava/lang/String;[B)V");
+    g_bt.list_paired = cacheMethod(jenv, cls, "bt_list_paired", "(J)V");
+    g_bt.start_discovery = cacheMethod(jenv, cls, "bt_start_discovery", "(J)V");
+    g_bt.cancel_discovery = cacheMethod(jenv, cls, "bt_cancel_discovery", "(J)V");
+    g_bt.make_discoverable = cacheMethod(jenv, cls, "bt_make_discoverable", "(JI)V");
+    g_bt.pair = cacheMethod(jenv, cls, "bt_pair", "(JLjava/lang/String;)V");
+    g_bt.unpair = cacheMethod(jenv, cls, "bt_unpair", "(JLjava/lang/String;)V");
+    g_bt.disconnect = cacheMethod(jenv, cls, "bt_disconnect", "(JI)V");
+    g_bt.hfp_connect = cacheMethod(jenv, cls, "bt_hfp_connect", "(JLjava/lang/String;)V");
+    g_bt.hfp_subscribe_vendor_at = cacheMethod(jenv, cls, "bt_hfp_subscribe_vendor_at", "(JILjava/lang/String;)V");
+    g_bt.hfp_send_vendor_at = cacheMethod(jenv, cls, "bt_hfp_send_vendor_at", "(JILjava/lang/String;Ljava/lang/String;)V");
+    g_bt.hfp_start_sco = cacheMethod(jenv, cls, "bt_hfp_start_sco", "(JI)V");
+    g_bt.hfp_stop_sco = cacheMethod(jenv, cls, "bt_hfp_stop_sco", "(JI)V");
+    g_bt.spp_connect = cacheMethod(jenv, cls, "bt_spp_connect", "(JLjava/lang/String;)V");
+    g_bt.spp_write = cacheMethod(jenv, cls, "bt_spp_write", "(JI[B)V");
+    g_bt.ble_start_advertising = cacheMethod(jenv, cls, "ble_start_advertising", "(JLjava/lang/String;)V");
+    g_bt.ble_stop_advertising = cacheMethod(jenv, cls, "ble_stop_advertising", "(J)V");
+    g_bt.ble_notify = cacheMethod(jenv, cls, "ble_notify", "(JLjava/lang/String;[B)V");
 }
 
 // ── Thread-attach helpers ────────────────────────────────────────────────
@@ -148,6 +164,10 @@ fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlN
     const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
     const jarg: jni.JString = if (arg) |a| jni.newStringUTF(jenv, a) else null;
     jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, method, pidToJlong(pid), jarg);
+    // Kotlin bridge methods can throw SecurityException on any BT permission gap
+    // (BLUETOOTH_CONNECT/SCAN/ADVERTISE). MOB-62: clearing here keeps a pending
+    // exception from leaking to the next JNI call on the same BEAM thread.
+    jni.exceptionClear(jenv);
     if (jarg != null) jni.deleteLocalRef(jenv, jarg);
     detachIfAttached(attached);
     return erts.ok(env);
@@ -401,7 +421,6 @@ fn mobBleMakeWriteMap(env: ?*erts.ErlNifEnv, char_uuid: ?[*:0]const u8, bytes: ?
     };
     return erts.makeMap(env, &keys, &vals) orelse mob_bt_atoms.err;
 }
-
 
 // ═════════════════════════════════════════════════════════════════════════
 // Paired-list streaming accumulator
@@ -1098,6 +1117,7 @@ export fn nif_bt_list_paired(
     defer detachIfAttached(attached);
 
     jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, g_bt.list_paired, pidToJlong(pid));
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1118,6 +1138,7 @@ export fn nif_bt_start_discovery(
     defer detachIfAttached(attached);
 
     jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, g_bt.start_discovery, pidToJlong(pid));
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1138,6 +1159,7 @@ export fn nif_bt_cancel_discovery(
     defer detachIfAttached(attached);
 
     jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, g_bt.cancel_discovery, pidToJlong(pid));
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1164,6 +1186,7 @@ export fn nif_bt_make_discoverable(
         pidToJlong(pid),
         @as(jni.JInt, duration),
     );
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1254,6 +1277,7 @@ export fn nif_bt_disconnect(
         pidToJlong(pid),
         @as(jni.JInt, session),
     );
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1286,6 +1310,7 @@ export fn nif_bt_hfp_subscribe_vendor_at(
         @as(jni.JInt, session),
         jjson,
     );
+    jni.exceptionClear(jenv);
     if (jjson != null) jni.deleteLocalRef(jenv, jjson);
     return erts.ok(env);
 }
@@ -1313,6 +1338,7 @@ export fn nif_bt_hfp_start_sco(
         pidToJlong(pid),
         @as(jni.JInt, session),
     );
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1339,6 +1365,7 @@ export fn nif_bt_hfp_stop_sco(
         pidToJlong(pid),
         @as(jni.JInt, session),
     );
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1381,6 +1408,7 @@ export fn nif_bt_hfp_send_vendor_at(
         jcmd,
         jargs,
     );
+    jni.exceptionClear(jenv);
     if (jcmd != null) jni.deleteLocalRef(jenv, jcmd);
     if (jargs != null) jni.deleteLocalRef(jenv, jargs);
     return erts.ok(env);
@@ -1419,6 +1447,7 @@ export fn nif_bt_spp_write(
             @as(jni.JInt, session),
             jbytes,
         );
+        jni.exceptionClear(jenv);
         jni.deleteLocalRef(jenv, jbytes);
     }
     return erts.ok(env);
@@ -1458,6 +1487,7 @@ export fn nif_ble_stop_advertising(
     defer detachIfAttached(attached);
 
     jenv.*.CallStaticVoidMethod.?(jenv, g_bt_cls, g_bt.ble_stop_advertising, pidToJlong(pid));
+    jni.exceptionClear(jenv);
     return erts.ok(env);
 }
 
@@ -1497,6 +1527,7 @@ export fn nif_ble_notify(
             juuid,
             jbytes,
         );
+        jni.exceptionClear(jenv);
         jni.deleteLocalRef(jenv, jbytes);
     }
     if (juuid != null) jni.deleteLocalRef(jenv, juuid);
