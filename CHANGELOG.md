@@ -10,6 +10,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Android: HFP now emits `:bt_hfp, :connected` for newly-initiated
+  connects and `:bt_hfp, :disconnected` for local + remote hang-ups**
+  (MOB-63 + MOB-64). The pre-fix `bt_hfp_connect` only ever emitted
+  `:connecting` for a fresh connection — the terminal `:connected`
+  was documented but never fired, so consumers had no way to observe
+  "your HFP is now live." `bt_disconnect` always emitted the
+  SPP-shaped `:bt_spp, :disconnected` regardless of profile and never
+  actually called the HFP `proxy.disconnect(device)` reflection method.
+
+  A single lifetime-scoped `BroadcastReceiver` on
+  `BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED` now drives both
+  events. `bt_hfp_connect` registers it once + records the caller pid
+  in `btHfpSessionPids`; `bt_disconnect` marks the session in
+  `btHfpLocalDisconnects` before initiating the reflection call, so
+  the receiver picks `reason = "local"` vs the "peer" default. SPP
+  and HFP disconnects are now emitted independently (a session with
+  both profiles active gets both events). The receiver filters to
+  known sessions so system-initiated pairs (user pairs a headset via
+  Settings) don't allocate phantom `btSessionMap` entries.
+
+  Also folded from the pre-commit review: `connectedDevices()` calls
+  are now `SecurityException`-guarded (`BLUETOOTH_CONNECT` on
+  API 31+) so a revoked grant doesn't crash `bt_disconnect`, and a
+  synchronous-false reflection result keeps the session pid mapped
+  in case Android's HFP proxy still connects asynchronously.
+
+
+### Fixed
+
 - **Android: JNI exception no longer leaks onto the BEAM scheduler thread**
   (MOB-62). The zig NIF had zero `ExceptionCheck`/`ExceptionClear` calls,
   which meant a `SecurityException` raised by any Kotlin bridge method

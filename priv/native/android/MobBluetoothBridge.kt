@@ -149,6 +149,23 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   private var btHfpProxy: BluetoothHeadset? = null
   private val btHfpVendorPids = ConcurrentHashMap<Int, Long>()
   private var btHfpVendorReceiver: BroadcastReceiver? = null
+  // MOB-64: pid to notify when a device's HFP profile finishes connecting.
+  // Keyed by session id (which is 1:1 with device address inside btSessionMap).
+  // Also used to route :bt_hfp, :disconnected events (MOB-63) — a bt_disconnect
+  // caller updates the pid so the disconnect event lands with them, not the
+  // original connect requester.
+  private val btHfpSessionPids = ConcurrentHashMap<Int, Long>()
+  // MOB-63: sessions we asked to disconnect locally. The state-change
+  // receiver consumes the marker to emit :disconnected with reason "local"
+  // instead of the "peer" default (which would lie to the caller who
+  // explicitly asked for the disconnect).
+  private val btHfpLocalDisconnects: MutableSet<Int> =
+      java.util.concurrent.ConcurrentHashMap.newKeySet()
+  // MOB-63/64: one receiver for the whole plugin lifetime, tracking every
+  // HFP state transition so :bt_hfp, :connected fires for newly-initiated
+  // connects and :bt_hfp, :disconnected fires whether the disconnect was
+  // local (via bt_disconnect) or remote (peer turned off).
+  private var btHfpConnectionReceiver: BroadcastReceiver? = null
   private val btSppSockets = ConcurrentHashMap<Int, BluetoothSocket>()
   private val btSppReadThreads = ConcurrentHashMap<Int, Thread>()
 
@@ -429,13 +446,72 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           nativeDeliverBtError(pid, "no_session")
           return
       }
-      btSppSockets.remove(session)?.let {
-          try { it.close() } catch (_: Exception) {}
+
+      // A session id is per-device, so the same session may have SPP AND
+      // HFP connections open. We must disconnect each profile that IS
+      // actually connected, and emit the correct :disconnected event for
+      // each — MOB-63 before the fix only ever emitted the SPP shape.
+      val hadSpp = btSppSockets.containsKey(session)
+      // connectedDevices() requires BLUETOOTH_CONNECT on API 31+; a
+      // revoked/missing grant throws SecurityException. Treat that as
+      // "no HFP connection to disconnect" so bt_disconnect still cleans
+      // up the SPP side rather than crashing the whole call.
+      val hadHfp = try {
+          btHfpProxy?.connectedDevices?.any { it.address == device.address } == true
+      } catch (_: SecurityException) {
+          false
       }
-      btSppReadThreads.remove(session)?.interrupt()
+
+      // SPP side: close the socket and emit the SPP-disconnected event
+      // synchronously (there's no broadcast-receiver equivalent for SPP).
+      if (hadSpp) {
+          btSppSockets.remove(session)?.let {
+              try { it.close() } catch (_: Exception) {}
+          }
+          btSppReadThreads.remove(session)?.interrupt()
+          nativeDeliverBtSppDisconnected(pid, session, "local")
+      }
+
+      // HFP side: initiate the profile disconnect. The connection-state
+      // broadcast receiver (registered by bt_hfp_connect) will pick up the
+      // STATE_DISCONNECTED transition and emit :bt_hfp, :disconnected —
+      // route it to THIS pid by updating the session-pid map first, and
+      // mark the session as a local disconnect so the receiver picks
+      // reason "local" instead of the "peer" default.
+      if (hadHfp) {
+          btHfpSessionPids[session] = pid
+          btHfpLocalDisconnects.add(session)
+          val proxy = btHfpProxy
+          if (proxy != null) {
+              try {
+                  val method = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
+                  method.invoke(proxy, device)
+              } catch (_: Exception) {
+                  // Emit synchronously as a fallback — the receiver won't fire
+                  // for a call that never reached the framework layer.
+                  nativeDeliverBtHfpDisconnected(pid, session, "local")
+                  btHfpLocalDisconnects.remove(session)
+                  btHfpSessionPids.remove(session)
+              }
+          } else {
+              nativeDeliverBtHfpDisconnected(pid, session, "local")
+              btHfpLocalDisconnects.remove(session)
+              btHfpSessionPids.remove(session)
+          }
+      }
+
+      // Neither profile was active. Emit an SPP-shaped :disconnected so old
+      // callers still see a signal on `bt_disconnect(unknown_session)` — pre-
+      // MOB-63 behaviour, kept to avoid a silent no-op.
+      if (!hadSpp && !hadHfp) {
+          nativeDeliverBtSppDisconnected(pid, session, "local")
+      }
+
       btHfpVendorPids.remove(session)
-      btSessionMap.remove(session)
-      nativeDeliverBtSppDisconnected(pid, session, "local")
+      // Only drop the session entirely once both profiles are gone. Keep it
+      // around for the HFP receiver to route the disconnected event; the
+      // receiver clears the session mapping after routing.
+      if (!hadHfp) btSessionMap.remove(session)
   }
 
   // ── HFP profile ────────────────────────────────────────────────────────
@@ -457,6 +533,60 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       adapter.getProfileProxy(activity, listener, BluetoothProfile.HEADSET)
   }
 
+  // MOB-64: register a one-time receiver for HFP connection-state
+  // transitions so `:bt_hfp, :connected` fires for a newly-initiated
+  // connect (which the pre-MOB-64 code never emitted — only the
+  // transient :connecting), and `:bt_hfp, :disconnected` fires for
+  // remote hang-ups and local `bt_disconnect` calls (MOB-63). The
+  // receiver runs for the lifetime of the plugin and routes each event
+  // to the pid recorded in btHfpSessionPids for that session.
+  private fun ensureHfpConnectionReceiver(activity: Activity) {
+      if (btHfpConnectionReceiver != null) return
+      btHfpConnectionReceiver = object : BroadcastReceiver() {
+          override fun onReceive(ctx: Context, intent: Intent) {
+              if (intent.action != BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) return
+              val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                  intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+              } else {
+                  @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+              } ?: return
+              val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
+              // ACTION_CONNECTION_STATE_CHANGED also fires for headsets
+              // paired outside the plugin (system Settings → Bluetooth).
+              // Don't allocate phantom sessions here — filter to devices
+              // we KNOW about, so `btSessionMap` doesn't grow one entry
+              // per system-initiated pair for the lifetime of the app.
+              val session = btSessionMap.entries
+                  .firstOrNull { it.value.address == device.address }?.key
+                  ?: return
+              val pid = btHfpSessionPids[session] ?: return
+
+              when (state) {
+                  BluetoothProfile.STATE_CONNECTED ->
+                      nativeDeliverBtHfpConnected(pid, session, device.address, btSafeName(device))
+
+                  BluetoothProfile.STATE_DISCONNECTED -> {
+                      val reason =
+                          if (btHfpLocalDisconnects.remove(session)) "local" else "peer"
+                      nativeDeliverBtHfpDisconnected(pid, session, reason)
+                      btHfpSessionPids.remove(session)
+                      // The disconnect closes the last active profile on the
+                      // device. If there's no SPP socket left either, retire
+                      // the session id — future connects allocate a fresh one.
+                      if (!btSppSockets.containsKey(session)) btSessionMap.remove(session)
+                  }
+              }
+          }
+      }
+      val filter = IntentFilter(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+      if (Build.VERSION.SDK_INT >= 33) {
+          activity.registerReceiver(btHfpConnectionReceiver, filter, Context.RECEIVER_EXPORTED)
+      } else {
+          @Suppress("UnspecifiedRegisterReceiverFlag")
+          activity.registerReceiver(btHfpConnectionReceiver, filter)
+      }
+  }
+
   @JvmStatic
   fun bt_hfp_connect(pid: Long, json: String) {
       val activity = activityRef?.get() ?: run { nativeDeliverBtError(pid, "no_activity"); return }
@@ -467,14 +597,25 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       val device = try { adapter.getRemoteDevice(mac) }
                    catch (_: Exception) { nativeDeliverBtError(pid, "invalid_address"); return }
 
+      // Register the connection-state receiver ONCE, up-front — the callback
+      // path below emits :bt_hfp, :connecting only, and the receiver is the
+      // path that emits :bt_hfp, :connected once the framework finishes.
+      ensureHfpConnectionReceiver(activity)
+
       acquireHfpProxy(activity) { proxy ->
           if (proxy == null) {
               nativeDeliverBtHfpConnectFailed(pid, mac, "hfp_proxy_unavailable")
               return@acquireHfpProxy
           }
           val session = btSessionFor(device)
+          // Route future :connected / :disconnected events for this session
+          // to the calling pid. bt_disconnect can override before firing its
+          // own disconnect (MOB-63).
+          btHfpSessionPids[session] = pid
           val connected = proxy.connectedDevices.any { it.address == device.address }
           if (connected) {
+              // Already connected before we asked — no state change is coming,
+              // so emit the terminal :connected directly.
               nativeDeliverBtHfpConnected(pid, session, device.address, btSafeName(device))
           } else {
               try {
@@ -482,10 +623,19 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   val ok = method.invoke(proxy, device) as? Boolean ?: false
                   if (ok) {
                       nativeDeliverBtHfpConnecting(pid, session, device.address)
+                      // :connected follows when the receiver sees STATE_CONNECTED.
                   } else {
+                      // Reflection returned false, but the framework may still
+                      // eventually connect (Android's HFP proxy is quirky).
+                      // Keep the session pid mapped so a late STATE_CONNECTED /
+                      // STATE_DISCONNECTED still routes to the caller — the
+                      // receiver's terminal :disconnected will clear it.
                       nativeDeliverBtHfpConnectFailed(pid, device.address, "hfp_connect_failed")
                   }
               } catch (e: Exception) {
+                  // Reflection itself blew up — no framework work started,
+                  // safe to drop the pid mapping.
+                  btHfpSessionPids.remove(session)
                   nativeDeliverBtHfpConnectFailed(pid, device.address, "hfp_connect_unavailable")
               }
           }
