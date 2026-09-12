@@ -478,6 +478,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       // route it to THIS pid by updating the session-pid map first, and
       // mark the session as a local disconnect so the receiver picks
       // reason "local" instead of the "peer" default.
+      var hfpFellBackSync = false
       if (hadHfp) {
           btHfpSessionPids[session] = pid
           btHfpLocalDisconnects.add(session)
@@ -492,11 +493,13 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   nativeDeliverBtHfpDisconnected(pid, session, "local")
                   btHfpLocalDisconnects.remove(session)
                   btHfpSessionPids.remove(session)
+                  hfpFellBackSync = true
               }
           } else {
               nativeDeliverBtHfpDisconnected(pid, session, "local")
               btHfpLocalDisconnects.remove(session)
               btHfpSessionPids.remove(session)
+              hfpFellBackSync = true
           }
       }
 
@@ -508,10 +511,14 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       }
 
       btHfpVendorPids.remove(session)
-      // Only drop the session entirely once both profiles are gone. Keep it
-      // around for the HFP receiver to route the disconnected event; the
-      // receiver clears the session mapping after routing.
-      if (!hadHfp) btSessionMap.remove(session)
+      // Drop the session entirely when there's no HFP work still in flight
+      // to close. `hadHfp` false means nothing to disconnect (SPP-only or
+      // truly-dead session); `hfpFellBackSync` means the reflection blew
+      // up before reaching the framework so no STATE_DISCONNECTED will
+      // arrive to trigger the receiver's cleanup path. In both cases the
+      // session id can retire immediately — otherwise leave the map
+      // populated so the receiver's terminal :disconnected can still route.
+      if (!hadHfp || hfpFellBackSync) btSessionMap.remove(session)
   }
 
   // ── HFP profile ────────────────────────────────────────────────────────
@@ -625,11 +632,14 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       nativeDeliverBtHfpConnecting(pid, session, device.address)
                       // :connected follows when the receiver sees STATE_CONNECTED.
                   } else {
-                      // Reflection returned false, but the framework may still
-                      // eventually connect (Android's HFP proxy is quirky).
-                      // Keep the session pid mapped so a late STATE_CONNECTED /
-                      // STATE_DISCONNECTED still routes to the caller — the
-                      // receiver's terminal :disconnected will clear it.
+                      // Reflection said no. `MobBluetooth.hfp_connect/1` promises
+                      // exactly one terminal event (`:connected` OR `:connect_failed`),
+                      // so clear the pid mapping — a late async STATE_CONNECTED
+                      // from a quirky Android HFP stack will still fire, but the
+                      // receiver drops it without a pid to route to. That's the
+                      // cost of keeping the docstring accurate; not observed in
+                      // practice, and filed as a follow-up if it ever bites.
+                      btHfpSessionPids.remove(session)
                       nativeDeliverBtHfpConnectFailed(pid, device.address, "hfp_connect_failed")
                   }
               } catch (e: Exception) {
