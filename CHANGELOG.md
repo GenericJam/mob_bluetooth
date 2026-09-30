@@ -24,6 +24,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `setActivity` swap resets all lifecycle-owned receivers so a fresh
   Activity re-arms cleanly.
 
+- **Android: HFP vendor-specific AT events from headsets without a
+  plugin session no longer allocate phantom sessions** (MOB-195). The
+  vendor-AT receiver used to fall back to `btSessionFor(dev)` for any
+  headset that sent a vendor AT command, including headsets paired
+  through system Settings. That leaked one `btSessionMap` entry per
+  device for the app's lifetime. Events from devices with no existing
+  session are now dropped; they had no subscriber pid to route to anyway.
 
 - **Android: HFP now emits `:bt_hfp, :connected` for newly-initiated
   connects and `:bt_hfp, :disconnected` for local + remote hang-ups**
@@ -48,11 +55,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   Also folded from the pre-commit review: `connectedDevices()` calls
   are now `SecurityException`-guarded (`BLUETOOTH_CONNECT` on
   API 31+) so a revoked grant doesn't crash `bt_disconnect`, and a
-  synchronous-false reflection result keeps the session pid mapped
-  in case Android's HFP proxy still connects asynchronously.
-
-
-### Fixed
+  synchronous-`false` result from the reflective HFP `connect()` clears
+  the session's pid mapping and emits `:connect_failed`, so callers get
+  exactly one terminal event.
 
 - **Android: JNI exception no longer leaks onto the BEAM scheduler thread**
   (MOB-62). The zig NIF had zero `ExceptionCheck`/`ExceptionClear` calls,
@@ -66,7 +71,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `mob/android/jni/mob_nif.zig`):
   - `nativeRegister` now caches every method through a new `cacheMethod`
     helper that clears any pending exception on a null return.
-  - Every `CallStaticVoidMethod` site (13 direct + 1 in `callBridgePidStr`,
+  - Every `CallStaticVoidMethod` site (12 direct + 1 in `callBridgePidStr`,
     which fans out to 5 more via `bt_pair` / `bt_unpair` / `bt_hfp_connect`
     / `bt_spp_connect` / `ble_start_advertising`) calls
     `jni.exceptionClear(jenv)` immediately after the call — the JNI spec
@@ -78,6 +83,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   API change. iOS path is untouched.
 
 ---
+
+## [0.3.1] - 2026-09-30
+
+### Changed
+- **Re-signed with plugin envelope v2** (MOB-287). mob_dev 0.7.2+ verifies
+  this signature before evaluating the manifest. mob_dev 0.7.0 / 0.7.1 can't
+  read v2 signatures and report this release as `invalid signature` —
+  upgrade the host app to `{:mob_dev, "~> 0.7.2", only: :dev, runtime: false}`.
+  No plugin code changes.
+- Cut from the 0.3.0 tag: the Android fixes merged on master since 0.3.0 (MOB-61/62/63/64/195) await device verification and will ship in 0.3.2.
 
 ## [0.3.0] - 2026-06-26
 
