@@ -73,7 +73,7 @@ defmodule MobBluetooth.LeTest do
           })
         )
 
-      assert length(decoded["characteristics"]) == 2
+      assert [_, _] = decoded["characteristics"]
     end
 
     test "raises on a missing or empty service_uuid" do
