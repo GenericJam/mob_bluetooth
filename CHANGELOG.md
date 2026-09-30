@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.3.1] - 2026-09-30
+
+### Changed
+- **Re-signed with plugin envelope v2** (MOB-287). mob_dev 0.7.2+ verifies
+  this signature before evaluating the manifest. mob_dev 0.7.0 / 0.7.1 can't
+  read v2 signatures and report this release as `invalid signature` —
+  upgrade the host app to `{:mob_dev, "~> 0.7.2", only: :dev, runtime: false}`.
+  No plugin code changes.
+- Cut from the 0.3.0 tag: the Android fixes merged on master since 0.3.0 (MOB-61/62/63/64/195) await device verification and will ship in 0.3.2.
+
 ## [0.3.0] - 2026-06-26
 
 ### Added
