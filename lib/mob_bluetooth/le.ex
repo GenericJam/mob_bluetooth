@@ -55,10 +55,11 @@ defmodule MobBluetooth.Le do
   process dies while advertising, the rename persists until the user changes
   it. On iOS `:local_name` only goes into the advertisement.
 
-  Renaming and restoring are asynchronous, so a start waits until the adapter
-  reports the name it will advertise (or about 1.5 s, logging a warning)
-  before advertising — `{:bt_le, :advertising_started}` arrives
-  correspondingly later. That applies when the adapter doesn't already carry
+  Renaming and restoring are asynchronous, so a start waits until every
+  rename / restore it or an earlier start asked for has landed (or about
+  1.5 s, logging a warning) before advertising —
+  `{:bt_le, :advertising_started}` arrives correspondingly later. That
+  applies when the adapter doesn't already carry
   `local_name`, and to a start without `:local_name` while the adapter's own
   name is still being restored (e.g. straight after a named advert); a start
   without `:local_name` on an unrenamed adapter begins at once. This is what
@@ -132,7 +133,9 @@ defmodule MobBluetooth.Le do
   or stopped start then delivers nothing (events don't say which start they
   belong to, so a late one would read as the newer start's outcome), and a
   start still waiting for the adapter's name to change never begins
-  advertising.
+  advertising. A newer start that fails before setup (e.g.
+  `:bad_service_uuid`) also stops the previous advert, so the last event
+  always matches what is advertising.
   """
   @spec start_advertising(socket :: term(), service()) :: term()
   def start_advertising(socket, service) do
