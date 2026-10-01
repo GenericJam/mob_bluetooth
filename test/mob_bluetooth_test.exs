@@ -114,15 +114,21 @@ defmodule MobBluetoothTest do
       assert :bluetooth_connect in caps
     end
 
-    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
-    test "the Android bridge is a MobPermissionProvider mapping :bluetooth_connect to the Nearby-devices group" do
-      src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBluetoothBridge.kt"))
-      assert src =~ "io.mob.plugin.MobPermissionProvider"
-      assert src =~ "fun permissionsFor"
-      assert src =~ "bluetooth_connect"
+    # MOB-319: classic discovery needs location on API <= 30 (and on 31+
+    # without neverForLocation), and Android 12+ ignores a FINE-only request.
+    # Merge the manifest exactly as mob_dev does into a host AndroidManifest.
+    test "the host AndroidManifest gets FINE and COARSE location for discovery" do
+      {manifest, _} = Code.eval_file(Path.join(@plugin_dir, "priv/mob_plugin.exs"))
+      permissions = MobDev.Plugin.Merge.android_permissions([{@plugin_dir, manifest}])
 
-      for perm <- ~w(BLUETOOTH_CONNECT BLUETOOTH_SCAN BLUETOOTH_ADVERTISE) do
-        assert src =~ "permission.#{perm}", "permissionsFor must request #{perm}"
+      host =
+        MobDev.NativeBuild.__merge_android_permissions__(
+          ~s(<manifest>\n    <application android:label="app" />\n</manifest>\n),
+          permissions
+        )
+
+      for perm <- ~w(ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION BLUETOOTH_SCAN BLUETOOTH_CONNECT) do
+        assert host =~ ~s(<uses-permission android:name="android.permission.#{perm}" />)
       end
     end
   end

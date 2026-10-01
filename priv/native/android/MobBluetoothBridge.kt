@@ -45,6 +45,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
@@ -100,6 +103,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           btHfpConnectionReceiver,
           btHfpVendorReceiver,
           btDiscoveryReceiver,
+          bleNameReceiver,
       ).forEach { r ->
         try {
           previous.unregisterReceiver(r)
@@ -111,27 +115,58 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
     }
     btPairingRequestReceiver = null
     btBondReceiver = null
+    // MOB-320: with the bond receiver gone, these waiters' terminal events
+    // can't arrive. Give each its one terminal message now (and drop their
+    // PINs) so a later pair() for the same device starts a fresh bond
+    // instead of joining one nobody is listening to.
+    for ((address, waiter) in btBondWaiters.drainAll()) {
+      btBondPins.remove(address)
+      nativeDeliverBtPairFailed(waiter, address, "activity_replaced")
+    }
     btHfpConnectionReceiver = null
     btHfpVendorReceiver = null
     btDiscoveryReceiver = null
+    bleNameReceiver = null
     activityRef = WeakReference(activity)
   }
 
-  // MobPermissionProvider: route the :bluetooth_connect capability to the whole
-  // Android 12+ "Nearby devices" runtime group, so one Mob.Permissions.request
-  // grants SCAN + CONNECT + ADVERTISE together (discovery, pairing, and
-  // make_discoverable all need them). The generated MobPluginBootstrap records
-  // this provider at registerAll; core's request_permission consults it.
+  // MobPermissionProvider: route the :bluetooth_connect capability to every
+  // runtime permission the plugin's surface needs on THIS device, so one
+  // Mob.Permissions.request grants discovery, pairing, profiles and
+  // advertising together. The generated MobPluginBootstrap records this
+  // provider at registerAll; core's request_permission consults it, and
+  // replies :granted only when every returned permission is granted — so the
+  // list must never contain a permission the running SDK doesn't define
+  // (API <= 30 would report :denied forever). See
+  // MobBluetoothPolicy.bluetoothConnectPermissions for the per-API list.
   override fun permissionsFor(cap: String): Array<String>? =
       if (cap == "bluetooth_connect") {
-        arrayOf(
-          android.Manifest.permission.BLUETOOTH_CONNECT,
-          android.Manifest.permission.BLUETOOTH_SCAN,
-          android.Manifest.permission.BLUETOOTH_ADVERTISE,
-        )
+        MobBluetoothPolicy.bluetoothConnectPermissions(Build.VERSION.SDK_INT, scanDisavowsLocation())
       } else {
         null
       }
+
+  // MOB-319: true when the host's merged AndroidManifest declares
+  // BLUETOOTH_SCAN with android:usesPermissionFlags="neverForLocation" (API
+  // 31+). Only then does Android 12+ discovery work without location access.
+  // mob_dev's plugin manifest schema can't carry that attribute today, so a
+  // host opts in by hand-declaring the tag; read the installed package's
+  // flags rather than assuming either way.
+  private fun scanDisavowsLocation(): Boolean {
+      if (Build.VERSION.SDK_INT < 31) return false
+      val ctx = activityRef?.get() ?: return false
+      return try {
+          @Suppress("DEPRECATION")
+          val info = ctx.packageManager.getPackageInfo(ctx.packageName, PackageManager.GET_PERMISSIONS)
+          val names = info.requestedPermissions ?: return false
+          val flags = info.requestedPermissionsFlags ?: return false
+          val i = names.indexOf(android.Manifest.permission.BLUETOOTH_SCAN)
+          i in flags.indices &&
+              (flags[i] and PackageInfo.REQUESTED_PERMISSION_NEVER_FOR_LOCATION) != 0
+      } catch (_: Exception) {
+          false
+      }
+  }
 
   // ── Mob.Bt — typed delivery externs (resolve to mob_bluetooth_jni.c) ─────
   @JvmStatic external fun nativeDeliverBtDiscoveryStarted(pid: Long)
@@ -178,7 +213,9 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   private var btDiscoveryReceiver: BroadcastReceiver? = null
   private var btDiscoveryPid: Long = 0
   private var btBondReceiver: BroadcastReceiver? = null
-  private val btBondPids = ConcurrentHashMap<String, Long>()
+  // MOB-320: every pair() caller waiting on a device's bond, so a second
+  // pair() while that bond is in flight joins it instead of tearing it down.
+  private val btBondWaiters = BondWaiters()
   // MOB-61: caller-supplied PINs, keyed by device MAC. The
   // ACTION_PAIRING_REQUEST receiver reads this map and, when the
   // system asks the app to answer a PIN prompt for a device we have
@@ -232,6 +269,14 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   private var bleAdvertiser: BluetoothLeAdvertiser? = null
   private var bleAdvertiseCallback: AdvertiseCallback? = null
   private var bleAdvertisingPid: Long = 0
+  // MOB-321: the adapter's own name while start_advertising(local_name:) has
+  // replaced it; put back by bleTeardown and on advertise failure. Touched
+  // only on `main` (start/stop post there; AdvertiseCallback runs there).
+  private val bleNameGuard = AdapterNameGuard()
+  // Feeds ACTION_LOCAL_NAME_CHANGED into bleNameGuard.observe, so a restore
+  // counts as done only once the adapter actually reports the original name.
+  // Registered on the first rename; runs on main like the guard's other users.
+  private var bleNameReceiver: BroadcastReceiver? = null
   // Characteristics built for the running service, keyed by uppercase UUID
   // string, so ble_notify can look them up to push a new value.
   private val bleCharacteristics = ConcurrentHashMap<String, BluetoothGattCharacteristic>()
@@ -287,19 +332,25 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       if (!adapter.isEnabled) { nativeDeliverBtError(pid, "adapter_disabled"); return }
 
       Log.d("MobBT", "step1: about to unregister old receiver if exists")
-      if (btDiscoveryReceiver != null) {
-          try { activity.unregisterReceiver(btDiscoveryReceiver) } catch (_: Exception) {}
-          btDiscoveryReceiver = null
-      }
+      clearDiscovery(activity)
       Log.d("MobBT", "step2: setting btDiscoveryPid")
 
       btDiscoveryPid = pid
       Log.d("MobBT", "step3: about to create receiver")
       val receiver = object : BroadcastReceiver() {
+          // MOB-322: a run started here ends with exactly one
+          // :discovery_finished, after which the receiver retires itself so a
+          // later system discovery stop (createBond cancels discovery) can't
+          // deliver a stray one. The FINISHED broadcast from cancelling an
+          // already-running discovery (below) predates our STARTED, so it's
+          // ignored rather than ending our run early.
+          private var started = false
+
           override fun onReceive(ctx: Context, intent: Intent) {
               val deliveryPid = btDiscoveryPid
-              if (deliveryPid == 0L) return
+              if (deliveryPid == 0L || btDiscoveryReceiver !== this) return
               when (intent.action) {
+                  BluetoothAdapter.ACTION_DISCOVERY_STARTED -> started = true
                   BluetoothDevice.ACTION_FOUND -> {
                       val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33)
                           intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
@@ -313,7 +364,9 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       }
                   }
                   BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                      if (!started) return
                       nativeDeliverBtDiscoveryFinished(deliveryPid)
+                      clearDiscovery(activity)
                   }
               }
           }
@@ -323,6 +376,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       Log.d("MobBT", "step5: building filter")
       val filter = IntentFilter().apply {
           addAction(BluetoothDevice.ACTION_FOUND)
+          addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
           addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
       }
       Log.d("MobBT", "step6: registering receiver, SDK=${Build.VERSION.SDK_INT}")
@@ -336,6 +390,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           Log.d("MobBT", "step7: receiver registered OK")
       } catch (e: Exception) {
           Log.e("MobBT", "registerReceiver threw: ${e.javaClass.simpleName}: ${e.message}", e)
+          clearDiscovery(activity)
           nativeDeliverBtError(pid, "register_failed")
           return
       }
@@ -350,8 +405,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           val result = adapter.startDiscovery()
           Log.d("MobBT", "step11: startDiscovery returned $result")
           if (!result) {
-              Log.d("MobBT", "step12: start_failed")
-              nativeDeliverBtError(pid, "start_failed")
+              // MOB-319: the platform refuses discovery (false, no throw)
+              // when it wants location access the app doesn't have.
+              val reason = discoveryStartFailureReason(activity)
+              Log.d("MobBT", "step12: startDiscovery refused: $reason")
+              clearDiscovery(activity)
+              nativeDeliverBtError(pid, reason)
               return
           }
           Log.d("MobBT", "step13: calling nativeDeliverBtDiscoveryStarted, pid=$pid")
@@ -359,11 +418,48 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           Log.d("MobBT", "step14: nativeDeliverBtDiscoveryStarted returned")
       } catch (e: SecurityException) {
           Log.e("MobBT", "SecurityException: ${e.message}", e)
+          clearDiscovery(activity)
           nativeDeliverBtError(pid, "permission_denied")
       } catch (e: Exception) {
           Log.e("MobBT", "Unexpected exception: ${e.javaClass.simpleName}: ${e.message}", e)
+          clearDiscovery(activity)
           nativeDeliverBtError(pid, "exception")
       }
+  }
+
+  // MOB-322: drop the discovery receiver and its pid. Every start_discovery
+  // failure path runs this, so a later system discovery stop (createBond
+  // cancels discovery) can't deliver a stray :discovery_finished to the pid
+  // whose discovery never started.
+  private fun clearDiscovery(ctx: Context?) {
+      btDiscoveryPid = 0
+      val receiver = btDiscoveryReceiver ?: return
+      btDiscoveryReceiver = null
+      try { ctx?.unregisterReceiver(receiver) } catch (_: Exception) {}
+  }
+
+  // MOB-319: name the reason startDiscovery() returned false. On API <= 30,
+  // and on 31+ unless BLUETOOTH_SCAN disavows location, the platform demands
+  // ACCESS_FINE_LOCATION (and, from API 29, location services switched on).
+  private fun discoveryStartFailureReason(ctx: Context): String {
+      val needsLocation =
+          MobBluetoothPolicy.discoveryNeedsLocation(Build.VERSION.SDK_INT, scanDisavowsLocation())
+      val fineGranted = try {
+          ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+              PackageManager.PERMISSION_GRANTED
+      } catch (_: Exception) {
+          false
+      }
+      val locationEnabled = if (Build.VERSION.SDK_INT >= 29) {
+          try {
+              (ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)?.isLocationEnabled ?: true
+          } catch (_: Exception) {
+              true
+          }
+      } else {
+          true
+      }
+      return MobBluetoothPolicy.discoveryStartFailureReason(needsLocation, fineGranted, locationEnabled)
   }
 
   @JvmStatic
@@ -371,10 +467,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       val adapter = btAdapter() ?: run { nativeDeliverBtError(pid, "no_adapter"); return }
       val activity = activityRef?.get()
       try { adapter.cancelDiscovery() } catch (_: SecurityException) {}
-      btDiscoveryReceiver?.let {
-          try { activity?.unregisterReceiver(it) } catch (_: Exception) {}
-          btDiscoveryReceiver = null
-      }
+      clearDiscovery(activity)
       nativeDeliverBtDiscoveryCancelled(pid)
   }
 
@@ -422,18 +515,54 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       val device = try { adapter.getRemoteDevice(mac) }
                    catch (_: Exception) { nativeDeliverBtError(pid, "invalid_address"); return }
 
+      if (btBondReceiver == null) {
+          btBondReceiver = object : BroadcastReceiver() {
+              override fun onReceive(ctx: Context, intent: Intent) {
+                  if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                  val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33)
+                      intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                  else
+                      @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                  if (dev == null) return
+                  when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
+                      BluetoothDevice.BOND_BONDED -> {
+                          val waiting = btBondWaiters.takeAll(dev.address)
+                          btBondPins.remove(dev.address)
+                          for (p in waiting) nativeDeliverBtPaired(p, dev.address, btSafeName(dev), true)
+                      }
+                      BluetoothDevice.BOND_NONE -> failBondWaiters(dev.address, "bond_none")
+                  }
+              }
+          }
+          val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+          if (Build.VERSION.SDK_INT >= 33) {
+              activity.registerReceiver(btBondReceiver, filter, Context.RECEIVER_EXPORTED)
+          } else {
+              @Suppress("UnspecifiedRegisterReceiverFlag")
+              activity.registerReceiver(btBondReceiver, filter)
+          }
+      }
+
+      // MOB-320: a pair() for a device whose bond this plugin already has in
+      // flight JOINS it — its pid gets the same terminal :paired /
+      // :pair_failed as the first caller's, and it neither calls createBond
+      // again (which returns false mid-bond) nor touches the first caller's
+      // PIN. Joining happens after the receiver is registered and before the
+      // bond-state read, so a bond that lands in between still reaches us.
+      if (!btBondWaiters.join(device.address, pid)) return
+
       // bondState needs BLUETOOTH_CONNECT on API 31+; an unguarded throw
       // here would be cleared by the NIF and leave the caller with no event.
-      val alreadyBonded = try {
-          device.bondState == BluetoothDevice.BOND_BONDED
+      val bondState = try {
+          device.bondState
       } catch (_: SecurityException) {
-          btBondPids.remove(device.address)
-          btBondPins.remove(device.address)
-          nativeDeliverBtPairFailed(pid, device.address, "permission_denied")
+          failBondWaiters(device.address, "permission_denied")
           return
       }
-      if (alreadyBonded) {
-          nativeDeliverBtPaired(pid, device.address, btSafeName(device), true)
+      if (bondState == BluetoothDevice.BOND_BONDED) {
+          for (p in btBondWaiters.takeAll(device.address)) {
+              nativeDeliverBtPaired(p, device.address, btSafeName(device), true)
+          }
           return
       }
 
@@ -447,52 +576,22 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           btBondPins.remove(device.address)
       }
 
-      if (btBondReceiver == null) {
-          btBondReceiver = object : BroadcastReceiver() {
-              override fun onReceive(ctx: Context, intent: Intent) {
-                  if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                  val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33)
-                      intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                  else
-                      @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                  if (dev == null) return
-                  val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
-                  val waitingPid = btBondPids[dev.address] ?: return
-                  when (state) {
-                      BluetoothDevice.BOND_BONDED -> {
-                          nativeDeliverBtPaired(waitingPid, dev.address, btSafeName(dev), true)
-                          btBondPids.remove(dev.address)
-                          btBondPins.remove(dev.address)
-                      }
-                      BluetoothDevice.BOND_NONE -> {
-                          nativeDeliverBtPairFailed(waitingPid, dev.address, "bond_none")
-                          btBondPids.remove(dev.address)
-                          btBondPins.remove(dev.address)
-                      }
-                  }
-              }
-          }
-          val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-          if (Build.VERSION.SDK_INT >= 33) {
-              activity.registerReceiver(btBondReceiver, filter, Context.RECEIVER_EXPORTED)
-          } else {
-              @Suppress("UnspecifiedRegisterReceiverFlag")
-              activity.registerReceiver(btBondReceiver, filter)
-          }
-      }
+      // Already bonding (started from system Settings, another app, or a
+      // bond whose waiters were dropped): the receiver delivers its outcome.
+      if (bondState == BluetoothDevice.BOND_BONDING) return
 
-      btBondPids[device.address] = pid
       try {
-          if (!device.createBond()) {
-              btBondPids.remove(device.address)
-              btBondPins.remove(device.address)
-              nativeDeliverBtPairFailed(pid, device.address, "create_bond_failed")
-          }
+          if (!device.createBond()) failBondWaiters(device.address, "create_bond_failed")
       } catch (e: SecurityException) {
-          btBondPids.remove(device.address)
-          btBondPins.remove(device.address)
-          nativeDeliverBtPairFailed(pid, device.address, "permission_denied")
+          failBondWaiters(device.address, "permission_denied")
       }
+  }
+
+  // Terminal :pair_failed for every pair() caller waiting on [address].
+  private fun failBondWaiters(address: String, reason: String) {
+      val waiting = btBondWaiters.takeAll(address)
+      btBondPins.remove(address)
+      for (p in waiting) nativeDeliverBtPairFailed(p, address, reason)
   }
 
   // MOB-61: register the ACTION_PAIRING_REQUEST receiver (once, plugin
@@ -687,7 +786,15 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       // arrive to trigger the receiver's cleanup path. In both cases the
       // session id can retire immediately — otherwise leave the map
       // populated so the receiver's terminal :disconnected can still route.
-      if (!hadHfp || hfpFellBackSync) btSessionMap.remove(session)
+      //
+      // MOB-352: retire under btSppLock, like the read thread and the
+      // reconnect re-pin, so this can't drop a session that a concurrent
+      // bt_spp_connect to the same device just re-pinned with a live socket.
+      synchronized(btSppLock) {
+          if ((!hadHfp || hfpFellBackSync) && !btSppSockets.containsKey(session)) {
+              btSessionMap.remove(session, device)
+          }
+      }
   }
 
   // ── HFP profile ────────────────────────────────────────────────────────
@@ -732,9 +839,10 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               // Don't allocate phantom sessions here — filter to devices
               // we KNOW about, so `btSessionMap` doesn't grow one entry
               // per system-initiated pair for the lifetime of the app.
-              val session = btSessionMap.entries
-                  .firstOrNull { it.value.address == device.address }?.key
+              val known = btSessionMap.entries
+                  .firstOrNull { it.value.address == device.address }
                   ?: return
+              val session = known.key
               val pid = btHfpSessionPids[session] ?: return
 
               when (state) {
@@ -749,7 +857,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       // The disconnect closes the last active profile on the
                       // device. If there's no SPP socket left either, retire
                       // the session id — future connects allocate a fresh one.
-                      if (!btSppSockets.containsKey(session)) btSessionMap.remove(session)
+                      // MOB-352: check-and-retire under btSppLock so a
+                      // concurrent SPP (re)connect's socket + re-pin can't
+                      // land between the check and the remove.
+                      synchronized(btSppLock) {
+                          if (!btSppSockets.containsKey(session)) btSessionMap.remove(session, known.value)
+                      }
                   }
               }
           }
@@ -1184,12 +1297,15 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               val adapter = mgr.adapter
                   ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_adapter"); return@post }
 
-              // Idempotent: tear down any prior server/advertiser before re-arming.
-              bleTeardown()
+              // Idempotent: tear down any prior server/advertiser before
+              // re-arming. The adapter name stays as-is: a re-advertise keeps
+              // the saved original (MOB-321) and renames/restores below, so
+              // the original is never re-read while a rename is in flight.
+              bleTeardown(restoreName = false)
               bleAdvertisingPid = pid
 
               val server = mgr.openGattServer(ctx, bleGattServerCallback(pid))
-                  ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_gatt_server"); return@post }
+                  ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_gatt_server"); bleTeardown(); return@post }
               bleGattServer = server
 
               val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
@@ -1229,9 +1345,19 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   ?: run { nativeDeliverBleAdvertisingFailed(pid, "no_advertiser"); bleTeardown(); return@post }
               bleAdvertiser = advertiser
 
-              // Setting the GAP local name makes scanners show the friendly name.
+              // Setting the GAP local name makes scanners show the friendly
+              // name. It renames the ADAPTER, system-wide and persistently,
+              // so (MOB-321) the adapter's own name is saved on the first
+              // rename and put back by bleTeardown (stop_advertising and every
+              // failure path) and onStartFailure. A spec without local_name
+              // advertises under the adapter's own name.
+              val setName = { n: String -> try { adapter.setName(n) } catch (_: Exception) { false } }
               if (localName != null) {
-                  try { adapter.name = localName } catch (_: Exception) {}
+                  ensureNameReceiver(ctx)
+                  val current = try { adapter.name } catch (_: Exception) { null }
+                  bleNameGuard.rename(current, localName, setName)
+              } else {
+                  bleNameGuard.restore(setName)
               }
 
               val settings = AdvertiseSettings.Builder()
@@ -1264,6 +1390,10 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       nativeDeliverBleAdvertisingStarted(pid)
                   }
                   override fun onStartFailure(errorCode: Int) {
+                      // Nothing is advertising under local_name; give the
+                      // adapter its own name back unless a newer start has
+                      // already replaced this callback.
+                      if (bleAdvertiseCallback === this) restoreAdapterName()
                       nativeDeliverBleAdvertisingFailed(pid, bleAdvertiseFailureReason(errorCode))
                   }
               }
@@ -1288,9 +1418,11 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       }
   }
 
-  /// Tear down advertiser + GATT server + central state. Must tolerate being
-  /// called when nothing is up (idempotent). Run on `main` by callers.
-  private fun bleTeardown() {
+  /// Tear down advertiser + GATT server + central state, and (unless a
+  /// restart passes restoreName = false) give the adapter its own name back.
+  /// Must tolerate being called when nothing is up (idempotent). Run on
+  /// `main` by callers.
+  private fun bleTeardown(restoreName: Boolean = true) {
       val advertiser = bleAdvertiser
       val callback = bleAdvertiseCallback
       if (advertiser != null && callback != null) {
@@ -1311,6 +1443,38 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       bleCentrals.clear()
       bleDevices.clear()
       bleAdvertisingPid = 0
+      if (restoreName) restoreAdapterName()
+  }
+
+  /// MOB-321: put back the adapter name start_advertising(local_name:)
+  /// replaced. No-op when nothing was renamed; if the adapter is unreachable
+  /// or the rename is refused, the saved name is kept for the next attempt.
+  private fun restoreAdapterName() {
+      val adapter = btAdapter() ?: return
+      bleNameGuard.restore { n -> try { adapter.setName(n) } catch (_: Exception) { false } }
+  }
+
+  /// MOB-321: register (once per Activity) the receiver that reports the
+  /// adapter's actual name changes to bleNameGuard. Best-effort: without it,
+  /// a pending restore is still confirmed by the name read on the next rename.
+  private fun ensureNameReceiver(ctx: Context) {
+      if (bleNameReceiver != null) return
+      val receiver = object : BroadcastReceiver() {
+          override fun onReceive(c: Context, intent: Intent) {
+              if (intent.action != BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED) return
+              bleNameGuard.observe(intent.getStringExtra(BluetoothAdapter.EXTRA_LOCAL_NAME))
+          }
+      }
+      val filter = IntentFilter(BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED)
+      try {
+          if (Build.VERSION.SDK_INT >= 33) {
+              ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+          } else {
+              @Suppress("UnspecifiedRegisterReceiverFlag")
+              ctx.registerReceiver(receiver, filter)
+          }
+          bleNameReceiver = receiver
+      } catch (_: Exception) {}
   }
 
   @JvmStatic
@@ -1336,5 +1500,129 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           // Missing BLUETOOTH_CONNECT — best-effort, drop silently.
       } catch (_: Exception) {
       }
+  }
+}
+
+// ── Pure policy ──────────────────────────────────────────────────────────────
+// Decisions the bridge makes from plain values. Kept free of Android framework
+// calls so test/kotlin/ can run them on a desktop JVM (the bridge object itself
+// can't load there: its initialiser touches Looper). Permission names are
+// compile-time constants, inlined at build time.
+
+internal object MobBluetoothPolicy {
+  /// MOB-319: the runtime permissions Mob.Permissions.request(socket,
+  /// :bluetooth_connect) asks for. API <= 30 has no Nearby-devices group
+  /// (BLUETOOTH / BLUETOOTH_ADMIN are install-time) but classic discovery
+  /// needs ACCESS_FINE_LOCATION. API 31+ needs SCAN + CONNECT + ADVERTISE,
+  /// plus location unless the host's BLUETOOTH_SCAN declares
+  /// neverForLocation; FINE goes with COARSE because Android 12+ ignores a
+  /// FINE-only request.
+  fun bluetoothConnectPermissions(sdkInt: Int, scanDisavowsLocation: Boolean): Array<String> {
+      if (sdkInt <= 30) return arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+      val nearby = arrayOf(
+          android.Manifest.permission.BLUETOOTH_CONNECT,
+          android.Manifest.permission.BLUETOOTH_SCAN,
+          android.Manifest.permission.BLUETOOTH_ADVERTISE,
+      )
+      return if (scanDisavowsLocation) {
+          nearby
+      } else {
+          nearby + arrayOf(
+              android.Manifest.permission.ACCESS_FINE_LOCATION,
+              android.Manifest.permission.ACCESS_COARSE_LOCATION,
+          )
+      }
+  }
+
+  /// MOB-319: whether startDiscovery() needs location access on this device.
+  fun discoveryNeedsLocation(sdkInt: Int, scanDisavowsLocation: Boolean): Boolean =
+      sdkInt <= 30 || !scanDisavowsLocation
+
+  /// MOB-319: the {:bt, :error, %{reason: _}} reason for a startDiscovery()
+  /// that returned false.
+  fun discoveryStartFailureReason(
+      needsLocation: Boolean,
+      fineLocationGranted: Boolean,
+      locationEnabled: Boolean,
+  ): String = when {
+      needsLocation && !fineLocationGranted -> "location_permission_required"
+      needsLocation && !locationEnabled -> "location_disabled"
+      else -> "start_failed"
+  }
+}
+
+/// MOB-320: pair() callers waiting on each device's bond, in call order.
+/// The first waiter for an address starts the bond; later ones join it and
+/// receive the same terminal event. Thread-safe (BEAM threads add, the
+/// bond-state receiver takes on main).
+internal class BondWaiters {
+  private val waiters = HashMap<String, MutableList<Long>>()
+
+  /// Record [pid] as waiting on [address]'s bond. True when it is the first
+  /// waiter, i.e. no pair() for that address is already in flight.
+  @Synchronized
+  fun join(address: String, pid: Long): Boolean {
+      val list = waiters.getOrPut(address) { mutableListOf() }
+      list.add(pid)
+      return list.size == 1
+  }
+
+  /// Remove and return every pid waiting on [address] (empty if none).
+  @Synchronized
+  fun takeAll(address: String): List<Long> = waiters.remove(address) ?: emptyList()
+
+  /// Remove and return every (address, pid) waiter, in call order per address.
+  @Synchronized
+  fun drainAll(): List<Pair<String, Long>> {
+      val all = waiters.flatMap { (address, pids) -> pids.map { address to it } }
+      waiters.clear()
+      return all
+  }
+}
+
+/// MOB-321: remembers the adapter's own name while LE advertising has renamed
+/// it, so stop / failure can put it back. [setName] is BluetoothAdapter.setName,
+/// which is asynchronous: getName() keeps reporting earlier names for a while.
+/// So the saved name is only forgotten once the adapter is OBSERVED carrying
+/// it again ([observe], fed by ACTION_LOCAL_NAME_CHANGED and by the read in
+/// [rename]) — never on the mere request to restore, or a quick restart could
+/// read one of our own pending renames back and save it as the original.
+internal class AdapterNameGuard {
+  private var original: String? = null
+  // A restore to [original] was accepted but not yet observed.
+  private var restorePending = false
+
+  /// The adapter reports [name] now. Confirms a pending restore.
+  fun observe(name: String?) {
+      if (restorePending && name != null && name == original) {
+          original = null
+          restorePending = false
+      }
+  }
+
+  /// Rename the adapter to [wanted]. [current] is the adapter's name as read
+  /// now (null if unreadable). The first rename saves the adapter's own name;
+  /// while a rename or an unconfirmed restore is outstanding the saved name is
+  /// kept. Without a name to restore, the adapter is left alone. Returns
+  /// whether the rename was applied.
+  fun rename(current: String?, wanted: String, setName: (String) -> Boolean): Boolean {
+      observe(current)
+      val saving = original == null
+      if (saving) original = current ?: return false
+      if (setName(wanted)) {
+          restorePending = false
+          return true
+      }
+      if (saving) original = null
+      return false
+  }
+
+  /// Put the saved name back. No-op when nothing is renamed or a restore is
+  /// already on its way; a refused rename keeps the saved name for the next
+  /// attempt.
+  fun restore(setName: (String) -> Boolean) {
+      val name = original ?: return
+      if (restorePending) return
+      if (setName(name)) restorePending = true
   }
 }

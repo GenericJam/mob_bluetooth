@@ -64,9 +64,12 @@ ios_plist_keys =
   ],
   # Runtime permission capability — Android-only (BT Classic is unsupported on
   # iOS, so no ios handler). The Android bridge's MobPermissionProvider maps
-  # :bluetooth_connect to the whole Nearby-devices group (SCAN/CONNECT/ADVERTISE);
-  # core's request_permission consults it so Mob.Permissions.request(socket,
-  # :bluetooth_connect) shows the runtime dialog and grants the group.
+  # :bluetooth_connect to every runtime permission the plugin needs on the
+  # running SDK: ACCESS_FINE_LOCATION on API <= 30 (classic discovery); the
+  # Nearby-devices group (SCAN/CONNECT/ADVERTISE) on API 31+, plus FINE+COARSE
+  # location unless the host declares BLUETOOTH_SCAN neverForLocation. Core's
+  # request_permission consults it, so one Mob.Permissions.request(socket,
+  # :bluetooth_connect) covers discovery, pairing, profiles and advertising.
   permissions: [
     %{capability: :bluetooth_connect}
   ],
@@ -84,8 +87,16 @@ ios_plist_keys =
       # these, adapter.isEnabled throws SecurityException on Android 11.
       "android.permission.BLUETOOTH",
       "android.permission.BLUETOOTH_ADMIN",
-      # Discovery (startDiscovery) returns scan results only with location access.
-      "android.permission.ACCESS_FINE_LOCATION"
+      # Classic discovery (startDiscovery) needs FINE location on API <= 30,
+      # and on API 31+ too unless BLUETOOTH_SCAN carries
+      # android:usesPermissionFlags="neverForLocation". Android 12+ ignores a
+      # FINE-only runtime request, so COARSE is declared alongside. mob_dev's
+      # manifest schema emits plain <uses-permission android:name=.../> tags
+      # (no maxSdkVersion / usesPermissionFlags), so these apply on every API;
+      # a host that hand-declares SCAN with neverForLocation skips the
+      # location prompt on API 31+ (README "Permissions").
+      "android.permission.ACCESS_FINE_LOCATION",
+      "android.permission.ACCESS_COARSE_LOCATION"
     ],
     # Plain JNI-thunk C (Java_io_mob_bluetooth_*) compiled via
     # -Dplugin_jni_sources alongside beam_jni.c — holds the 25 nativeDeliverBt*

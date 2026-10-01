@@ -44,12 +44,26 @@ defmodule MobBluetooth do
 
   ## Permissions
 
-  Bluetooth requires runtime permissions on Android 12+ (API 31+):
+  One runtime request covers the whole plugin on Android:
 
-    * `:bluetooth_scan` — for `start_discovery/1`
-    * `:bluetooth_connect` — for `pair/2`, `connect/*`, `disconnect/2`
+      Mob.Permissions.request(socket, :bluetooth_connect)
 
-  Request via `Mob.Permissions.request/2` before calling MobBluetooth functions.
+  It asks for what the running Android version needs:
+
+    * **Android 11 and below (API ≤ 30)** — `ACCESS_FINE_LOCATION`. The
+      legacy `BLUETOOTH` / `BLUETOOTH_ADMIN` permissions are install-time and
+      already granted, but classic discovery returns nothing without location.
+    * **Android 12+ (API 31+)** — the "Nearby devices" group (`BLUETOOTH_SCAN`,
+      `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`) **plus** `ACCESS_FINE_LOCATION`
+      / `ACCESS_COARSE_LOCATION`, because discovery still needs location unless
+      the app's manifest declares `BLUETOOTH_SCAN` with
+      `android:usesPermissionFlags="neverForLocation"`. When it does, location
+      is not requested on API 31+ (see the README for the manifest lines).
+
+  Discovery also needs **precise** location: if the user picks "Approximate"
+  the request reports `:denied` and `start_discovery/1` fails with
+  `:location_permission_required`. Pairing, profiles and advertising don't use
+  location.
 
   ## iOS
 
@@ -154,7 +168,20 @@ defmodule MobBluetooth do
   individual `{:bt, :discovered, device}` messages, terminated by
   `{:bt, :discovery_finished}`.
 
-  Discovery typically runs ~12 seconds on Android.
+  Discovery typically runs ~12 seconds on Android. Request
+  `:bluetooth_connect` first (see "Permissions" in the module doc).
+
+  If discovery can't start you get `{:bt, :error, %{reason: reason}}` and no
+  further discovery events for this call:
+
+    * `:location_permission_required` — the platform wants
+      `ACCESS_FINE_LOCATION` (API ≤ 30, or API 31+ without `neverForLocation`)
+      and it isn't granted (or the user granted only approximate location).
+    * `:location_disabled` — location access is granted but the device's
+      location setting is off (Android 10+ refuses discovery then).
+    * `:permission_denied` — `BLUETOOTH_SCAN` not granted (API 31+).
+    * `:adapter_disabled`, `:no_adapter`, `:no_activity`, `:register_failed`,
+      `:exception`, or `:start_failed` (the platform refused for another reason).
   """
   @spec start_discovery(socket :: term()) :: term()
   def start_discovery(socket) do
@@ -231,6 +258,16 @@ defmodule MobBluetooth do
 
     * `{:bt, :paired, device}`
     * `{:bt, :pair_failed, %{address: String.t(), reason: atom()}}`
+
+  Calling `pair/3` again for a device whose bond an earlier `pair/3` is still
+  waiting on joins that bond instead of starting another: every call gets the
+  same terminal message (one per call), and the later call's `:pin` is ignored
+  — the first caller's PIN answers the prompt. The same applies when the device
+  is already bonding (e.g. started from system Settings): the call waits for
+  that bond's outcome. If the host Activity is replaced while a call is
+  waiting, the plugin can no longer observe the bond, so each waiting call gets
+  `{:bt, :pair_failed, %{address: addr, reason: :activity_replaced}}` — check
+  `list_paired/1` or pair again.
   """
   @spec pair(socket :: term(), device(), keyword()) :: term()
   def pair(socket, device, opts \\ []) do

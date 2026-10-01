@@ -78,14 +78,47 @@ mix mob.plugin.trust mob_bluetooth
 
 ## Permissions
 
-`mob_bluetooth`'s manifest declares the Android runtime permissions
-the host app needs:
+Request one capability at runtime before calling into the Android API:
 
-- `android.permission.BLUETOOTH_CONNECT` — pair, connect, disconnect
-- `android.permission.BLUETOOTH_SCAN` — discovery
+```elixir
+Mob.Permissions.request(socket, :bluetooth_connect)
+```
 
-Request via `Mob.Permissions.request/2` at runtime before calling
-into the API.
+It asks for whatever the running Android version needs:
+
+| Android | Runtime permissions requested |
+|---|---|
+| 11 and below (API ≤ 30) | `ACCESS_FINE_LOCATION` (classic discovery needs it; `BLUETOOTH` / `BLUETOOTH_ADMIN` are install-time) |
+| 12+ (API 31+) | `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`, plus `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` unless `BLUETOOTH_SCAN` is declared `neverForLocation` |
+
+The plugin manifest declares all of these (plus the legacy `BLUETOOTH` /
+`BLUETOOTH_ADMIN`). Discovery needs *precise* location wherever location is
+required; without it `start_discovery/1` fails with
+`{:bt, :error, %{reason: :location_permission_required}}` (or
+`:location_disabled` when the device's location setting is off).
+
+### Dropping the location prompt on Android 12+
+
+mob_dev writes plugin permissions as plain `<uses-permission>` tags, so the
+plugin can't add `neverForLocation` / `maxSdkVersion` itself. To discover
+without location on API 31+, declare these in your app's
+`android/app/src/main/AndroidManifest.xml` (mob_dev then skips its own tags
+for the same permissions):
+
+```xml
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+    android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+    android:maxSdkVersion="30" />
+```
+
+The plugin reads the installed flags at runtime and stops requesting
+location on API 31+. Trade-off: with `neverForLocation`, Android filters
+some BLE beacon results out of scans. This plugin's Android side doesn't scan
+BLE (only classic discovery, which isn't filtered, plus LE advertising and a
+GATT server, which don't involve location), so nothing here loses results.
 
 ## Development
 

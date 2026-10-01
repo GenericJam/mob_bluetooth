@@ -47,7 +47,9 @@ BLE needs a real radio, so nothing on the `ble_*` / `MobBluetooth.Le` rows works
 
 ## Cross-repo work
 
-**mob (framework):** `Mob.Permissions.request/2` is the sanctioned path to the `:bluetooth_connect` runtime permission — the plugin's `permissions:` manifest entry maps `:bluetooth_connect` to the whole Android 12+ "Nearby devices" group (`SCAN` + `CONNECT` + `ADVERTISE`). Do not invent a second permissions surface here.
+**mob (framework):** `Mob.Permissions.request/2` is the sanctioned path to the `:bluetooth_connect` runtime permission — the bridge's `MobPermissionProvider` maps it per SDK (`MobBluetoothPolicy.bluetoothConnectPermissions`): `ACCESS_FINE_LOCATION` on API ≤ 30; the Android 12+ "Nearby devices" group (`SCAN` + `CONNECT` + `ADVERTISE`) on API 31+, plus `FINE` + `COARSE` location unless the host's `BLUETOOTH_SCAN` is `neverForLocation`. Core replies `:granted` only if *every* returned permission is granted, so never return a permission the running SDK doesn't define. Do not invent a second permissions surface here.
+
+**mob_dev manifest schema limit:** `android.permissions` is a list of plain strings; mob_dev emits `<uses-permission android:name="…" />` with no attributes, so the plugin cannot declare `maxSdkVersion` / `usesPermissionFlags`. Hosts that want `neverForLocation` hand-declare the tags (README "Permissions"); the bridge reads the installed flags at runtime.
 
 **mob_dev:** the Kotlin bridge copy, the `UIBackgroundModes` array merge (needs mob_dev ≥ 0.6.16 so it composes with e.g. `mob_background`'s `audio`), and the `MobPluginBootstrap.registerAll()` codegen all live there. When adding a native surface, check first that `MobDev.Plugin` copies your new files — the manifest schema is upstream.
 
@@ -64,7 +66,7 @@ MIX_ENV=test mix test
 
 Host tests cover pure code: manifest shape, JSON-encoding helpers (`encode_device`, `encode_pair`, `encode_connect`, `encode_advertise`, `scan_service_uuids`, `advertise_name`), platform predicates, and the `{:error, :unsupported}` return paths. **Every function that dead-ends in a NIF exposes its opt-normalisation as `@doc false` for a reason** — that's the unit-testable seam. Follow the pattern when you add a new one.
 
-Native code is not exercised by `mix test`. It needs a `mix mob.deploy --native` of a host app (mob_plugin_demo is the canonical driver) and a real device. **Verified device set:**
+Native code is mostly not exercised by `mix test`. The exception is the bridge's **pure policy** (bottom of `MobBluetoothBridge.kt`: `MobBluetoothPolicy`, `BondWaiters`, `AdapterNameGuard` — no Android framework calls): `test/mob_bluetooth/android_policy_test.exs` compiles the bridge with `kotlinc` against `platforms/android-35/android.jar` and runs the scenarios in `test/kotlin/MobBluetoothPolicyTest.kt` on a desktop JVM. Those tests are tagged `:kotlin` and auto-excluded when `kotlinc` / `java` / the SDK jar are missing (CI). Put new decision logic there when you can, so it gets a real host test. Everything else needs a `mix mob.deploy --native` of a host app (mob_plugin_demo is the canonical driver) and a real device. **Verified device set:**
 
 * **Moto G Power 2021** (`ZY22DP6HFL`, API 30 / Android 11) — Classic discovery + pair, HFP vendor AT (Hytera EHW02 PTT `+CTXD` / `+CUTXC`), SPP, BLE peripheral (`MobBluetooth.Le`) advert start + notify. This is the Android reference device; API 30 in particular exercises the *legacy install-time* `BLUETOOTH` / `BLUETOOTH_ADMIN` path that gets ignored on API 31+.
 * **iPhone SE** — BLE peripheral (`MobBluetooth.Le`) via CoreBluetooth's `CBPeripheralManager`. Classic returns `{:error, :unsupported}` synchronously — that is the correct behaviour on iOS, not a bug to chase.
@@ -73,7 +75,7 @@ The iOS Simulator and Android emulator canonical images do not have radios. Adve
 
 ## The pre-empt-failure rules that matter here
 
-1. **Android 12+ runtime permissions are per-*group*, requested via `Mob.Permissions.request(socket, :bluetooth_connect)`.** The manifest maps that capability to `SCAN` + `CONNECT` + `ADVERTISE` together. Do not request `:bluetooth_scan` and `:bluetooth_connect` separately; users get two dialogs and the second one confuses them.
+1. **Android runtime permissions are requested once, via `Mob.Permissions.request(socket, :bluetooth_connect)`.** The provider returns the per-SDK list above. Do not request `:bluetooth_scan` and `:bluetooth_connect` separately; users get two dialogs and the second one confuses them. Classic discovery needs `ACCESS_FINE_LOCATION` on API ≤ 30 and on 31+ without `neverForLocation` — `startDiscovery()` just returns `false` without it (logcat: `Permission denial: Need ACCESS_FINE_LOCATION permission to get scan results`), surfaced as `:location_permission_required`.
 2. **API 30 and below need the *legacy* `BLUETOOTH` + `BLUETOOTH_ADMIN` install-time permissions or `adapter.isEnabled` throws `SecurityException`** — both are already in the manifest and auto-granted. Do not remove them thinking they're redundant on modern Android; they gate the *legacy* stack, not the runtime one.
 3. **iOS Classic is `{:error, :unsupported}` forever.** MFi is a paid, NDA-gated program Kevin has not signed up for. Docs that hint the classic surface will "work later on iOS" are wrong — remove them.
 4. **Background BLE is opt-in per app, not opt-out.** By default no `UIBackgroundModes` entry ships (Apple rejects apps declaring background modes they don't use). An app that needs it sets `config :mob_bluetooth, ble_background_modes: [:central | :peripheral | ...]` and the manifest merges the matching entry.

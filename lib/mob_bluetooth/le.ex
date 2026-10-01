@@ -38,10 +38,22 @@ defmodule MobBluetooth.Le do
 
   ## Permissions
 
-  Advertising requires `:bluetooth_advertise` on Android 12+ (API 31+), in
-  addition to `:bluetooth_connect`. Request via `Mob.Permissions.request/2`
-  before calling. iOS gates BLE behind the `NSBluetoothAlwaysUsageDescription`
-  Info.plist key (declared by the plugin manifest).
+  On Android, request `:bluetooth_connect` via `Mob.Permissions.request/2`
+  before calling — on Android 12+ (API 31+) it grants the "Nearby devices"
+  group, which includes `BLUETOOTH_ADVERTISE`. iOS gates BLE behind the
+  `NSBluetoothAlwaysUsageDescription` Info.plist key (declared by the plugin
+  manifest).
+
+  ## `:local_name` on Android
+
+  Android advertises the *adapter's* name, so `:local_name` renames the phone's
+  Bluetooth adapter while advertising — system-wide: other apps and the
+  Bluetooth settings screen see `local_name` too. The adapter's own name is
+  saved first and put back on `stop_advertising/1` and when advertising fails
+  (`{:bt_le, :advertising_failed, _}`); restarting with another `:local_name`
+  keeps the saved name, and restarting without one restores it. If the app
+  process dies while advertising, the rename persists until the user changes
+  it. On iOS `:local_name` only goes into the advertisement.
 
   ## Example — advertise a service and push a notification
 
@@ -99,6 +111,9 @@ defmodule MobBluetooth.Le do
   Set `:low_latency` to request a high-priority (low connection-interval)
   link — recommended for latency-sensitive payloads like MIDI. It's a hint;
   the OS and the central negotiate the actual interval.
+
+  On Android, `:local_name` is the phone's Bluetooth adapter name for as long
+  as advertising runs (see "`:local_name` on Android" above).
   """
   @spec start_advertising(socket :: term(), service()) :: term()
   def start_advertising(socket, service) do
@@ -112,7 +127,8 @@ defmodule MobBluetooth.Le do
 
   @doc """
   Stop advertising and tear down the GATT server. Connected centrals are
-  disconnected. Idempotent.
+  disconnected. On Android, the adapter name `:local_name` replaced is put
+  back. Idempotent.
   """
   @spec stop_advertising(socket :: term()) :: term()
   def stop_advertising(socket) do
