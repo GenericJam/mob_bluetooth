@@ -210,6 +210,10 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   // local (via bt_disconnect) or remote (peer turned off).
   private var btHfpConnectionReceiver: BroadcastReceiver? = null
   private val btSppSockets = ConcurrentHashMap<Int, BluetoothSocket>()
+  // Serialises SPP socket ownership with session retirement (bt_disconnect
+  // vs. the read thread's remote-close cleanup vs. a reconnect's re-pin), so
+  // each SPP connection yields exactly one :disconnected.
+  private val btSppLock = Any()
   private val btSppReadThreads = ConcurrentHashMap<Int, Thread>()
 
   private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
@@ -599,17 +603,34 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
 
   @JvmStatic
   fun bt_disconnect(pid: Long, session: Int) {
-      val device = btSessionMap[session]
-      if (device == null) {
-          nativeDeliverBtError(pid, "no_session")
-          return
+      // The session lookup and the SPP socket claim run under btSppLock, as
+      // does the read thread's remote-close cleanup. Either this call takes
+      // the socket (and sends the only :disconnected, "local"), or the read
+      // thread has already taken it AND retired the session, so the lookup
+      // below returns :no_session. Without the lock, a disconnect in the gap
+      // would fall through to the synthetic "local" fallback after "remote".
+      val device: BluetoothDevice
+      val hadSpp: Boolean
+      synchronized(btSppLock) {
+          device = btSessionMap[session] ?: run {
+              nativeDeliverBtError(pid, "no_session")
+              return
+          }
+          // A session id is per-device, so the same session may have SPP AND
+          // HFP connections open. We must disconnect each profile that IS
+          // actually connected, and emit the correct :disconnected event for
+          // each — MOB-63 before the fix only ever emitted the SPP shape.
+          // SPP has no broadcast-receiver equivalent, so its event is
+          // synchronous; the read thread, whose input.read throws once we
+          // close, then finds the socket gone and emits nothing.
+          val sock = btSppSockets.remove(session)
+          hadSpp = sock != null
+          if (sock != null) {
+              btSppReadThreads.remove(session)?.interrupt()
+              try { sock.close() } catch (_: Exception) {}
+              nativeDeliverBtSppDisconnected(pid, session, "local")
+          }
       }
-
-      // A session id is per-device, so the same session may have SPP AND
-      // HFP connections open. We must disconnect each profile that IS
-      // actually connected, and emit the correct :disconnected event for
-      // each — MOB-63 before the fix only ever emitted the SPP shape.
-      val hadSpp = btSppSockets.containsKey(session)
       // connectedDevices() requires BLUETOOTH_CONNECT on API 31+; a
       // revoked/missing grant throws SecurityException. Treat that as
       // "no HFP connection to disconnect" so bt_disconnect still cleans
@@ -618,24 +639,6 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           btHfpProxy?.connectedDevices?.any { it.address == device.address } == true
       } catch (_: SecurityException) {
           false
-      }
-
-      // SPP side: close the socket and emit the SPP-disconnected event
-      // synchronously (there's no broadcast-receiver equivalent for SPP).
-      // Whoever removes the socket from btSppSockets owns the single
-      // :disconnected event: here that's "local", and the read thread —
-      // whose input.read throws once we close — then emits nothing.
-      // If the read thread won the race (the peer closed first), it has
-      // already sent "remote" for this session; the caller still gets a
-      // terminal reply (:no_session) unless HFP has its own event coming.
-      val sppClosedHere = hadSpp && btSppSockets.remove(session)?.let {
-          btSppReadThreads.remove(session)?.interrupt()
-          try { it.close() } catch (_: Exception) {}
-          nativeDeliverBtSppDisconnected(pid, session, "local")
-          true
-      } == true
-      if (hadSpp && !sppClosedHere && !hadHfp) {
-          nativeDeliverBtError(pid, "no_session")
       }
 
       // HFP side: initiate the profile disconnect. The connection-state
@@ -950,10 +953,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               val socket = if (secure) device.createRfcommSocketToServiceRecord(uuid)
                            else device.createInsecureRfcommSocketToServiceRecord(uuid)
               socket.connect()
-              btSppSockets[session] = socket
-              // A remote close of an earlier connection to this device may
-              // have retired the session id in between; re-pin it.
-              btSessionMap[session] = device
+              synchronized(btSppLock) {
+                  btSppSockets[session] = socket
+                  // A remote close of an earlier connection to this device
+                  // may have retired the session id in between; re-pin it.
+                  btSessionMap[session] = device
+              }
               nativeDeliverBtSppConnected(pid, session, device.address, btSafeName(device))
 
               val readThread = Thread {
@@ -968,15 +973,19 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       }
                   } catch (_: Exception) {}
                   // Only emit if bt_disconnect didn't already claim the
-                  // socket (it emits "local" itself).
-                  if (btSppSockets.remove(session, socket)) {
-                      btSppReadThreads.remove(session)
-                      nativeDeliverBtSppDisconnected(pid, session, "remote")
-                      // Retire the session id unless HFP still uses it or a
-                      // newer connection to the same device already holds
-                      // it, so a later disconnect(sid) gets :no_session.
-                      if (!btHfpSessionPids.containsKey(session) && !btSppSockets.containsKey(session)) {
-                          btSessionMap.remove(session, device)
+                  // socket (it emits "local" itself). Claim, retirement and
+                  // event happen under btSppLock so a concurrent disconnect
+                  // sees either the socket or no session, never the gap.
+                  synchronized(btSppLock) {
+                      if (btSppSockets.remove(session, socket)) {
+                          btSppReadThreads.remove(session)
+                          // Retire the session id unless HFP still uses it or
+                          // a newer connection to the same device holds it, so
+                          // a later disconnect(sid) gets :no_session.
+                          if (!btHfpSessionPids.containsKey(session) && !btSppSockets.containsKey(session)) {
+                              btSessionMap.remove(session, device)
+                          }
+                          nativeDeliverBtSppDisconnected(pid, session, "remote")
                       }
                   }
               }
