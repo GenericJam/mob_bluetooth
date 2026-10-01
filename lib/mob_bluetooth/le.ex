@@ -55,6 +55,17 @@ defmodule MobBluetooth.Le do
   process dies while advertising, the rename persists until the user changes
   it. On iOS `:local_name` only goes into the advertisement.
 
+  Renaming and restoring are asynchronous, so a start waits until the adapter
+  reports the name it will advertise (or about 1.5 s, logging a warning)
+  before advertising — `{:bt_le, :advertising_started}` arrives
+  correspondingly later. That applies when the adapter doesn't already carry
+  `local_name`, and to a start without `:local_name` while the adapter's own
+  name is still being restored (e.g. straight after a named advert); a start
+  without `:local_name` on an unrenamed adapter begins at once. This is what
+  makes the advertisement carry the intended name rather than the previous
+  one, and makes a name too long for the scan response fail that same start
+  with `:data_too_large`.
+
   ## Example — advertise a service and push a notification
 
       service = %{
@@ -114,6 +125,14 @@ defmodule MobBluetooth.Le do
 
   On Android, `:local_name` is the phone's Bluetooth adapter name for as long
   as advertising runs (see "`:local_name` on Android" above).
+
+  Each start delivers exactly one of `:advertising_started` /
+  `:advertising_failed`, unless a newer `start_advertising/2` or a
+  `stop_advertising/1` lands before that outcome: on Android the superseded
+  or stopped start then delivers nothing (events don't say which start they
+  belong to, so a late one would read as the newer start's outcome), and a
+  start still waiting for the adapter's name to change never begins
+  advertising.
   """
   @spec start_advertising(socket :: term(), service()) :: term()
   def start_advertising(socket, service) do
