@@ -6,6 +6,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Android: classic discovery works through the documented permission
+  flow** (MOB-319). `Mob.Permissions.request(socket, :bluetooth_connect)`
+  never asked for location, but `startDiscovery()` needs
+  `ACCESS_FINE_LOCATION` on API ≤ 30 and on API 31+ unless `BLUETOOTH_SCAN`
+  is declared `neverForLocation`. Without it the platform returned `false`
+  (`Permission denial: Need ACCESS_FINE_LOCATION permission to get scan
+  results`) and callers got `{:bt, :error, %{reason: :start_failed}}`. The
+  capability is now per-SDK: `ACCESS_FINE_LOCATION` on API ≤ 30 (where the
+  Nearby-devices permissions don't exist and so could never be granted);
+  `BLUETOOTH_SCAN` / `CONNECT` / `ADVERTISE` on API 31+, plus
+  `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` unless the installed
+  app's `BLUETOOTH_SCAN` carries `neverForLocation` (read from the package's
+  requested-permission flags). The manifest now also declares
+  `ACCESS_COARSE_LOCATION` (Android 12+ ignores a FINE-only request). A
+  refused `startDiscovery()` reports `:location_permission_required` or
+  `:location_disabled` when that's the cause, `:start_failed` otherwise.
+  mob_dev's manifest schema can't emit `neverForLocation` / `maxSdkVersion`,
+  so hosts that want location-free discovery on API 31+ declare those tags
+  themselves (README "Permissions").
+
+- **Android: a second `pair/3` for a device that is already bonding no
+  longer drops the first caller** (MOB-320). The second call's
+  `createBond()` returned `false` and its failure path removed the first
+  caller's pid, so the first caller never got `:paired`. A `pair/3` while
+  that device's bond is in flight (from an earlier `pair/3`, or already
+  `BOND_BONDING`) now joins it: every caller gets the bond's terminal
+  `:paired` / `:pair_failed`, and the later caller's `:pin` is ignored. If
+  the host Activity is replaced mid-bond, each waiting caller gets
+  `:pair_failed` with the new reason `:activity_replaced` (the bond
+  receiver goes with the old Activity).
+
+- **Android: `MobBluetooth.Le.start_advertising(local_name: ...)` no longer
+  renames the Bluetooth adapter permanently** (MOB-321). The adapter's own
+  name is saved before the rename and restored on `stop_advertising/1`, on
+  every advertising failure, and when a restart drops `:local_name`; a
+  restart with a new `:local_name` keeps the original. The original is only
+  forgotten once the adapter is seen carrying it again
+  (`ACTION_LOCAL_NAME_CHANGED` or a later read), because `setName` is
+  asynchronous and a quick stop/restart could otherwise save one of the
+  plugin's own pending names as the original. While advertising, the
+  adapter's name is `local_name` (documented in `MobBluetooth.Le`).
+
+- **Android: each `start_discovery/1` gets exactly one
+  `:discovery_finished`, and the receiver doesn't outlive the run**
+  (MOB-322). Before, the receiver and its pid stayed registered after a
+  failure (`:permission_denied`, `:start_failed`, …) and after a normal
+  finish. A later discovery stop, such as the one `createBond()` triggers,
+  then sent a stray `{:bt, :discovery_finished}` to the old caller. Every
+  failure path now unregisters the receiver. A successful run unregisters
+  it after its own `DISCOVERY_FINISHED`, and ignores the FINISHED broadcast
+  from cancelling a discovery that was already running when it started.
+
+- **Android: session retirement after HFP disconnects is serialised with
+  SPP** (MOB-352). `bt_disconnect`'s final retirement and the HFP
+  connection receiver's retirement now run under `btSppLock` and skip a
+  session that holds a live SPP socket, so a concurrent SPP (re)connect to
+  the same device can no longer lose its session id.
+
+### Added
+
+- Host tests for the Android bridge's pure policy (per-SDK permissions,
+  discovery failure reasons, pair waiters, adapter-name restore), compiled
+  with `kotlinc` and run on a desktop JVM; tagged `:kotlin` and skipped
+  where no Android SDK is installed.
+
 ## [0.3.2] - 2026-10-01
 
 ### Fixed
