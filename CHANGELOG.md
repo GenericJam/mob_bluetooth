@@ -32,8 +32,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   device for the app's lifetime. Events from devices with no existing
   session are now dropped; they had no subscriber pid to route to anyway.
 
-- **Android: HFP now emits `:bt_hfp, :connected` for newly-initiated
-  connects and `:bt_hfp, :disconnected` for local + remote hang-ups**
+- **Android: HFP now emits `:bt_hfp, :connected` for already-connected
+  headsets (and, on Android ≤ 9, newly-initiated connects) and
+  `:bt_hfp, :disconnected` for local + remote hang-ups**
   (MOB-63 + MOB-64). The pre-fix `bt_hfp_connect` only ever emitted
   `:connecting` for a fresh connection — the terminal `:connected`
   was documented but never fired, so consumers had no way to observe
@@ -62,6 +63,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `connect()` maps to the same reason). A synchronous-`false` result from
   the reflective HFP `connect()` clears the session's pid mapping and
   emits `:connect_failed`, so callers get exactly one terminal event.
+
+  **Platform limit:** since Android 10, `BluetoothHeadset.connect()` is
+  restricted to privileged/system apps (`BLUETOOTH_PRIVILEGED`). For a
+  normal app the call returns `false`, so `Hfp.connect/2` on a headset the
+  system hasn't connected yields exactly one
+  `{:bt_hfp, :connect_failed, %{reason: :hfp_connect_failed}}`. When the
+  headset is already connected (through Settings or its own reconnect),
+  `Hfp.connect/2` attaches a session and delivers `:connected` right
+  away. Verified on Android 15 with a Monster Open Ear AC317:
+  `:connected`, then a local `disconnect` giving exactly one `:local`,
+  and link loss giving exactly one `:peer`.
 
 - **Android: `pair` / `pair(pin:)` without `BLUETOOTH_CONNECT` now
   reply `{:bt, :pair_failed, %{reason: :permission_denied}}`** instead

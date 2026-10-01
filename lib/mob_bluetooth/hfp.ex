@@ -71,6 +71,14 @@ defmodule MobBluetooth.Hfp do
   Result: `{:bt_hfp, :connected, session_id, payload}` on success,
   `{:bt_hfp, :connect_failed, %{address: String.t(), reason: atom()}}`
   on failure (3-tuple — no session id exists yet).
+
+  On Android 10+ an app can't start an HFP connection itself:
+  `BluetoothHeadset.connect()` needs `BLUETOOTH_PRIVILEGED`, so connecting
+  a headset the system hasn't already connected yields
+  `{:bt_hfp, :connect_failed, %{reason: :hfp_connect_failed}}`. Have the
+  user connect the headset in system Bluetooth settings (or let it
+  auto-reconnect), then call `connect/2` to attach a session; that
+  delivers `:connected` immediately.
   """
   @spec connect(socket :: term(), MobBluetooth.device()) :: term()
   def connect(socket, device) do
