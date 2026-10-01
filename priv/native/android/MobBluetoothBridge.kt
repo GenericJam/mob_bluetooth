@@ -414,11 +414,21 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       // receiver so Android's PIN prompt is auto-answered with the supplied
       // string instead of showing the system dialog. Documented in
       // `MobBluetooth.pair/3` for years but never actually wired.
-      val pin = parsed?.optString("pin")?.takeIf { it.isNotEmpty() }
+      val pin = parsed.optString("pin").takeIf { it.isNotEmpty() }
       val device = try { adapter.getRemoteDevice(mac) }
                    catch (_: Exception) { nativeDeliverBtError(pid, "invalid_address"); return }
 
-      if (device.bondState == BluetoothDevice.BOND_BONDED) {
+      // bondState needs BLUETOOTH_CONNECT on API 31+; an unguarded throw
+      // here would be cleared by the NIF and leave the caller with no event.
+      val alreadyBonded = try {
+          device.bondState == BluetoothDevice.BOND_BONDED
+      } catch (_: SecurityException) {
+          btBondPids.remove(device.address)
+          btBondPins.remove(device.address)
+          nativeDeliverBtPairFailed(pid, device.address, "permission_denied")
+          return
+      }
+      if (alreadyBonded) {
           nativeDeliverBtPaired(pid, device.address, btSafeName(device), true)
           return
       }
@@ -578,7 +588,10 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           if (ok) nativeDeliverBtUnpaired(pid, device.address)
           else    nativeDeliverBtError(pid, "remove_bond_failed")
       } catch (e: Exception) {
-          nativeDeliverBtError(pid, "remove_bond_unavailable")
+          // Reflection wraps the framework's SecurityException (missing
+          // BLUETOOTH_CONNECT) in an InvocationTargetException.
+          val denied = e is SecurityException || e.cause is SecurityException
+          nativeDeliverBtError(pid, if (denied) "permission_denied" else "remove_bond_unavailable")
       }
   }
 
@@ -609,12 +622,20 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
 
       // SPP side: close the socket and emit the SPP-disconnected event
       // synchronously (there's no broadcast-receiver equivalent for SPP).
-      if (hadSpp) {
-          btSppSockets.remove(session)?.let {
-              try { it.close() } catch (_: Exception) {}
-          }
+      // Whoever removes the socket from btSppSockets owns the single
+      // :disconnected event: here that's "local", and the read thread —
+      // whose input.read throws once we close — then emits nothing.
+      // If the read thread won the race (the peer closed first), it has
+      // already sent "remote" for this session; the caller still gets a
+      // terminal reply (:no_session) unless HFP has its own event coming.
+      val sppClosedHere = hadSpp && btSppSockets.remove(session)?.let {
           btSppReadThreads.remove(session)?.interrupt()
+          try { it.close() } catch (_: Exception) {}
           nativeDeliverBtSppDisconnected(pid, session, "local")
+          true
+      } == true
+      if (hadSpp && !sppClosedHere && !hadHfp) {
+          nativeDeliverBtError(pid, "no_session")
       }
 
       // HFP side: initiate the profile disconnect. The connection-state
@@ -764,7 +785,16 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           // to the calling pid. bt_disconnect can override before firing its
           // own disconnect (MOB-63).
           btHfpSessionPids[session] = pid
-          val connected = proxy.connectedDevices.any { it.address == device.address }
+          // connectedDevices needs BLUETOOTH_CONNECT on API 31+. This
+          // callback can run on the main thread (onServiceConnected), where
+          // an uncaught throw kills the app — guard and fail terminally.
+          val connected = try {
+              proxy.connectedDevices.any { it.address == device.address }
+          } catch (_: SecurityException) {
+              btHfpSessionPids.remove(session)
+              nativeDeliverBtHfpConnectFailed(pid, device.address, "permission_denied")
+              return@acquireHfpProxy
+          }
           if (connected) {
               // Already connected before we asked — no state change is coming,
               // so emit the terminal :connected directly.
@@ -791,7 +821,9 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   // Reflection itself blew up — no framework work started,
                   // safe to drop the pid mapping.
                   btHfpSessionPids.remove(session)
-                  nativeDeliverBtHfpConnectFailed(pid, device.address, "hfp_connect_unavailable")
+                  val denied = e is SecurityException || e.cause is SecurityException
+                  nativeDeliverBtHfpConnectFailed(pid, device.address,
+                      if (denied) "permission_denied" else "hfp_connect_unavailable")
               }
           }
       }
@@ -825,7 +857,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_CMD)
                   val cmdType = intent.getIntExtra(
                       BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_CMD_TYPE, -1)
-                  val args = intent.getSerializableExtra(
+                  @Suppress("DEPRECATION") val args = intent.getSerializableExtra(
                       "android.bluetooth.headset.extra.VENDOR_SPECIFIC_HEADSET_EVENT_ARGS")
                   if (dev == null || cmd == null) return
                   val devSession = btSessionMap.entries.firstOrNull { it.value.address == dev.address }?.key
@@ -919,6 +951,9 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                            else device.createInsecureRfcommSocketToServiceRecord(uuid)
               socket.connect()
               btSppSockets[session] = socket
+              // A remote close of an earlier connection to this device may
+              // have retired the session id in between; re-pin it.
+              btSessionMap[session] = device
               nativeDeliverBtSppConnected(pid, session, device.address, btSafeName(device))
 
               val readThread = Thread {
@@ -932,9 +967,18 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                           nativeDeliverBtSppData(pid, session, slice)
                       }
                   } catch (_: Exception) {}
-                  nativeDeliverBtSppDisconnected(pid, session, "remote")
-                  btSppSockets.remove(session)
-                  btSppReadThreads.remove(session)
+                  // Only emit if bt_disconnect didn't already claim the
+                  // socket (it emits "local" itself).
+                  if (btSppSockets.remove(session, socket)) {
+                      btSppReadThreads.remove(session)
+                      nativeDeliverBtSppDisconnected(pid, session, "remote")
+                      // Retire the session id unless HFP still uses it or a
+                      // newer connection to the same device already holds
+                      // it, so a later disconnect(sid) gets :no_session.
+                      if (!btHfpSessionPids.containsKey(session) && !btSppSockets.containsKey(session)) {
+                          btSessionMap.remove(session, device)
+                      }
+                  }
               }
               btSppReadThreads[session] = readThread
               readThread.start()

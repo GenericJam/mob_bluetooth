@@ -52,12 +52,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   known sessions so system-initiated pairs (user pairs a headset via
   Settings) don't allocate phantom `btSessionMap` entries.
 
-  Also folded from the pre-commit review: `connectedDevices()` calls
-  are now `SecurityException`-guarded (`BLUETOOTH_CONNECT` on
-  API 31+) so a revoked grant doesn't crash `bt_disconnect`, and a
-  synchronous-`false` result from the reflective HFP `connect()` clears
-  the session's pid mapping and emits `:connect_failed`, so callers get
-  exactly one terminal event.
+  Also folded from the pre-commit review: every `connectedDevices()`
+  call (in `bt_disconnect` and `bt_hfp_connect`) is now
+  `SecurityException`-guarded (`BLUETOOTH_CONNECT` on API 31+). A
+  missing grant no longer crashes the app from the main-thread proxy
+  callback; `Hfp.connect` instead emits exactly one
+  `{:bt_hfp, :connect_failed, %{reason: :permission_denied}}` and drops
+  the session's pid mapping (a `SecurityException` from the reflective
+  `connect()` maps to the same reason). A synchronous-`false` result from
+  the reflective HFP `connect()` clears the session's pid mapping and
+  emits `:connect_failed`, so callers get exactly one terminal event.
+
+- **Android: `pair` / `pair(pin:)` without `BLUETOOTH_CONNECT` now
+  reply `{:bt, :pair_failed, %{reason: :permission_denied}}`** instead
+  of no message (the unguarded `bondState` read threw before the
+  guarded `createBond`). `unpair` reports `:permission_denied` instead
+  of `:remove_bond_unavailable` for the same cause.
+
+- **Android: SPP sessions emit exactly one `:bt_spp, :disconnected`.**
+  A local `MobBluetooth.disconnect/2` used to emit `:remote` (from the
+  read thread, whose read throws once the socket closes) and then
+  `:local`. Whichever side removes the socket first now sends the only
+  `:disconnected` event. If the peer's close wins that race, the
+  `disconnect/2` caller gets `{:bt, :error, %{reason: :no_session}}`
+  after the `:remote` event, instead of nothing. A remote close also
+  retires the session id, unless HFP or a newer connection to the same
+  device still uses it, so a later `disconnect(sid)` returns
+  `{:bt, :error, %{reason: :no_session}}` instead of a synthetic second
+  `:disconnected`.
 
 - **Android: JNI exception no longer leaks onto the BEAM scheduler thread**
   (MOB-62). The zig NIF had zero `ExceptionCheck`/`ExceptionClear` calls,
