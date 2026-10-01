@@ -16,19 +16,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `startAdvertising` runs, so on some devices (seen on API 30) a start
   advertised the adapter's PREVIOUS name — and a name too long for the scan
   response was accepted, then failed the NEXT start with `:data_too_large`.
-  After a rename the bridge now waits until the adapter reports the new name
-  (`ACTION_LOCAL_NAME_CHANGED`, or `getName()` polled every 100 ms) before
-  starting, bounded at 1.5 s (then it starts anyway and logs a warning). The
-  same holds in reverse: a start without `:local_name` right after a named
-  one (or a stop) waits for the adapter's own name to be restored, instead of
-  advertising the old `local_name`. Starts without `:local_name` on an
-  unrenamed adapter, or whose name the adapter already carries, start at once
-  as before. A newer `start_advertising/2` or a
-  `stop_advertising/1` cancels a start still waiting for its name — it never
-  begins advertising — and a start superseded or stopped before its outcome
-  now delivers no `:advertising_started` / `:advertising_failed` (previously a
-  late callback could still report it); every other start delivers exactly
-  one.
+  The bridge now tracks every `setName` it issues until
+  `ACTION_LOCAL_NAME_CHANGED` reports it, and holds `startAdvertising` until
+  none is in flight, bounded at 1.5 s (then it starts anyway and logs a
+  warning). `getName()` is never trusted while a rename or restore is in
+  flight, and a late broadcast of an earlier rename can't release a newer
+  start. The same holds in reverse: a start without `:local_name` right after
+  a named one (or a stop) waits for the adapter's own name to be restored,
+  instead of advertising the old `local_name`. Starts without `:local_name` on
+  an unrenamed adapter, or whose name the adapter already carries, start at
+  once as before. The adapter's own name stays saved until the adapter is
+  back on it with nothing in flight, so quick start / stop sequences restore
+  the phone's own name rather than one of the advert names. A newer
+  `start_advertising/2` or a `stop_advertising/1` cancels a start still
+  waiting for its name — it never begins advertising — and a start superseded
+  or stopped before its outcome now delivers no `:advertising_started` /
+  `:advertising_failed` (previously a late callback could still report it);
+  every other start delivers exactly one. A start rejected before setup
+  (`:bad_service_uuid`, `:adapter_disabled`, …) now also stops the previous
+  advert and restores the adapter name before reporting its failure, so the
+  last event always matches what is advertising.
 
 ## [0.4.0] - 2026-10-01
 
