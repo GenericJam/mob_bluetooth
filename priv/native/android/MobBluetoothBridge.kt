@@ -274,9 +274,14 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   // only on `main` (start/stop post there; AdvertiseCallback runs there).
   private val bleNameGuard = AdapterNameGuard()
   // Feeds ACTION_LOCAL_NAME_CHANGED into bleNameGuard.observe, so a restore
-  // counts as done only once the adapter actually reports the original name.
-  // Registered on the first rename; runs on main like the guard's other users.
+  // counts as done only once the adapter actually reports the original name,
+  // and into bleStartGate.observe (MOB-360). Registered on the first rename;
+  // runs on main like the guard's other users.
   private var bleNameReceiver: BroadcastReceiver? = null
+  // MOB-360: defers startAdvertising until the requested name (local_name,
+  // or the adapter's own name being restored) lands, and tells callbacks
+  // whether their start is still the current one. Main only.
+  private val bleStartGate = AdvertStartGate()
   // Characteristics built for the running service, keyed by uppercase UUID
   // string, so ble_notify can look them up to push a new value.
   private val bleCharacteristics = ConcurrentHashMap<String, BluetoothGattCharacteristic>()
@@ -1352,13 +1357,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               // failure path) and onStartFailure. A spec without local_name
               // advertises under the adapter's own name.
               val setName = { n: String -> try { adapter.setName(n) } catch (_: Exception) { false } }
-              if (localName != null) {
-                  ensureNameReceiver(ctx)
-                  val current = try { adapter.name } catch (_: Exception) { null }
-                  bleNameGuard.rename(current, localName, setName)
-              } else {
-                  bleNameGuard.restore(setName)
-              }
+              val current = try { adapter.name } catch (_: Exception) { null }
+              if (localName != null) ensureNameReceiver(ctx)
+              val name = bleNameGuard.prepareAdvert(current, localName, setName)
+              // A restore can only be pending after a rename, so this is
+              // normally registered already; re-arms it after an Activity swap.
+              if (name.awaiting != null) ensureNameReceiver(ctx)
 
               val settings = AdvertiseSettings.Builder()
                   .setAdvertiseMode(
@@ -1385,20 +1389,26 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   .setIncludeDeviceName(true)
                   .build()
 
-              val callback = object : AdvertiseCallback() {
-                  override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                      nativeDeliverBleAdvertisingStarted(pid)
-                  }
-                  override fun onStartFailure(errorCode: Int) {
-                      // Nothing is advertising under local_name; give the
-                      // adapter its own name back unless a newer start has
-                      // already replaced this callback.
-                      if (bleAdvertiseCallback === this) restoreAdapterName()
-                      nativeDeliverBleAdvertisingFailed(pid, bleAdvertiseFailureReason(errorCode))
-                  }
+              // MOB-360: the scan response packs the name the stack has when
+              // startAdvertising runs, and setName is async — so after a
+              // rename, or a restore for a start without local_name, the
+              // launch waits (bleStartGate) until the adapter reports that
+              // name, or ADVERT_NAME_TIMEOUT_MS passes. A start superseded or
+              // stopped first delivers no event.
+              val t = bleStartGate.begin(current, name.awaiting, name.inFlux) { ticket ->
+                  launchAdvertising(pid, ticket, advertiser, settings, advData, scanResponse)
               }
-              bleAdvertiseCallback = callback
-              advertiser.startAdvertising(settings, advData, scanResponse, callback)
+              if (bleStartGate.isWaiting(t)) {
+                  val wanted = name.awaiting
+                  main.postDelayed({
+                      if (bleStartGate.isWaiting(t)) {
+                          Log.w("MobBT", "MOB-360: adapter not seen as \"$wanted\" within " +
+                              "${ADVERT_NAME_TIMEOUT_MS} ms; advertising anyway")
+                          bleStartGate.timeout(t)
+                      }
+                  }, ADVERT_NAME_TIMEOUT_MS)
+                  recheckAdvertName(adapter, t)
+              }
           } catch (e: SecurityException) {
               nativeDeliverBleAdvertisingFailed(pid, "permission_denied")
               bleTeardown()
@@ -1407,6 +1417,56 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
               nativeDeliverBleAdvertisingFailed(pid, "internal_error")
               bleTeardown()
           }
+      }
+  }
+
+  /// MOB-360: deadline for the adapter to report a requested local_name.
+  private const val ADVERT_NAME_TIMEOUT_MS = 1500L
+
+  /// MOB-360: poll getName() while start [t] waits, as a fallback for a
+  /// missed ACTION_LOCAL_NAME_CHANGED. Stops once the start launches or is
+  /// superseded.
+  private fun recheckAdvertName(adapter: BluetoothAdapter, t: Int) {
+      main.postDelayed({
+          if (bleStartGate.isWaiting(t)) {
+              bleStartGate.recheck(t, try { adapter.name } catch (_: Exception) { null })
+              recheckAdvertName(adapter, t)
+          }
+      }, 100L)
+  }
+
+  /// Start advertising for start [ticket] (run on main, possibly after a
+  /// deferral). Its outcome is delivered only while [ticket] is current.
+  private fun launchAdvertising(
+      pid: Long,
+      ticket: Int,
+      advertiser: BluetoothLeAdvertiser,
+      settings: AdvertiseSettings,
+      advData: AdvertiseData,
+      scanResponse: AdvertiseData,
+  ) {
+      val callback = object : AdvertiseCallback() {
+          override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+              if (bleStartGate.isCurrent(ticket)) nativeDeliverBleAdvertisingStarted(pid)
+          }
+          override fun onStartFailure(errorCode: Int) {
+              if (!bleStartGate.isCurrent(ticket)) return
+              // Nothing is advertising under local_name; give the adapter
+              // its own name back.
+              restoreAdapterName()
+              nativeDeliverBleAdvertisingFailed(pid, bleAdvertiseFailureReason(errorCode))
+          }
+      }
+      try {
+          bleAdvertiseCallback = callback
+          advertiser.startAdvertising(settings, advData, scanResponse, callback)
+      } catch (e: SecurityException) {
+          nativeDeliverBleAdvertisingFailed(pid, "permission_denied")
+          bleTeardown()
+      } catch (e: Exception) {
+          Log.e("MobBT", "startAdvertising failed: ${e.javaClass.simpleName}: ${e.message}", e)
+          nativeDeliverBleAdvertisingFailed(pid, "internal_error")
+          bleTeardown()
       }
   }
 
@@ -1423,6 +1483,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   /// Must tolerate being called when nothing is up (idempotent). Run on
   /// `main` by callers.
   private fun bleTeardown(restoreName: Boolean = true) {
+      bleStartGate.cancel()
       val advertiser = bleAdvertiser
       val callback = bleAdvertiseCallback
       if (advertiser != null && callback != null) {
@@ -1455,14 +1516,18 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   }
 
   /// MOB-321: register (once per Activity) the receiver that reports the
-  /// adapter's actual name changes to bleNameGuard. Best-effort: without it,
-  /// a pending restore is still confirmed by the name read on the next rename.
+  /// adapter's actual name changes to bleNameGuard and (MOB-360) to
+  /// bleStartGate. Best-effort: without it, a pending restore is still
+  /// confirmed by the name read on the next rename, and a deferred start by
+  /// recheckAdvertName or its timeout.
   private fun ensureNameReceiver(ctx: Context) {
       if (bleNameReceiver != null) return
       val receiver = object : BroadcastReceiver() {
           override fun onReceive(c: Context, intent: Intent) {
               if (intent.action != BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED) return
-              bleNameGuard.observe(intent.getStringExtra(BluetoothAdapter.EXTRA_LOCAL_NAME))
+              val name = intent.getStringExtra(BluetoothAdapter.EXTRA_LOCAL_NAME)
+              bleNameGuard.observe(name)
+              bleStartGate.observe(name)
           }
       }
       val filter = IntentFilter(BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED)
@@ -1624,5 +1689,109 @@ internal class AdapterNameGuard {
       val name = original ?: return
       if (restorePending) return
       if (setName(name)) restorePending = true
+  }
+
+  /// MOB-360: put the adapter on the name an advertising start needs —
+  /// [wanted], or (null) the adapter's own name — given [current], the name
+  /// read now. Returns what the start must wait for: the name just
+  /// requested or still being restored (null: nothing is changing), and
+  /// whether an earlier rename / restore was unobserved at the time.
+  fun prepareAdvert(current: String?, wanted: String?, setName: (String) -> Boolean): AdvertName {
+      observe(current)
+      val inFlux = restorePending
+      if (wanted != null) {
+          return AdvertName(if (rename(current, wanted, setName)) wanted else null, inFlux)
+      }
+      restore(setName)
+      return AdvertName(if (restorePending) original else null, inFlux)
+  }
+}
+
+/// MOB-360: see [AdapterNameGuard.prepareAdvert].
+internal data class AdvertName(val awaiting: String?, val inFlux: Boolean)
+
+/// MOB-360: holds startAdvertising back until the adapter actually carries
+/// the name the start asked for — its local_name, or the adapter's own name
+/// being restored for a start without one. setName is asynchronous and the
+/// scan response packs whatever name the stack has when advertising starts,
+/// so starting straight after the rename advertised the PREVIOUS name on
+/// API 30 — and an over-long name failed with data_too_large one start late.
+///
+/// Each start gets a ticket. A deferred start launches when the name is
+/// observed ([observe], fed by ACTION_LOCAL_NAME_CHANGED; [recheck], fed by
+/// getName() reads) or at its deadline ([timeout]). [cancel] (stop, or the
+/// teardown before a newer start) drops a deferred start and makes every
+/// earlier ticket stale: the bridge delivers no event for a stale ticket,
+/// because events carry no start identity and a late one would be read as
+/// the newer start's outcome. Confined to the main thread.
+internal class AdvertStartGate {
+  private var ticket = 0
+  // The name our latest start asked for, until the adapter reports it.
+  // Outlives cancel(): the rename / restore is still on its way.
+  private var awaiting: String? = null
+  // Whether a getName() read can confirm [awaiting]. Not when an earlier
+  // rename / restore was still unobserved at begin: the read may report a
+  // name the stack is about to overwrite.
+  private var readsConfirm = false
+  private var launch: ((Int) -> Unit)? = null
+
+  /// A start_advertising: supersedes earlier starts and returns this
+  /// start's ticket. [adapterName] is the name read before the start's
+  /// setName, [requested] the name the start just asked for or is still
+  /// waiting to see restored (null: nothing changing), [nameInFlux] whether
+  /// an earlier rename / restore is still unobserved (see
+  /// [AdapterNameGuard.prepareAdvert]). Runs [launch] now unless the adapter
+  /// must first be seen carrying [requested].
+  fun begin(adapterName: String?, requested: String?, nameInFlux: Boolean, launch: (Int) -> Unit): Int {
+    val t = ++ticket
+    this.launch = null
+    val settled = !nameInFlux && awaiting == null
+    if (requested == null || (settled && requested == adapterName)) {
+      launch(t)
+      return t
+    }
+    awaiting = requested
+    readsConfirm = settled
+    this.launch = launch
+    return t
+  }
+
+  /// The adapter reports [name] (ACTION_LOCAL_NAME_CHANGED). Launches the
+  /// deferred start when it is the awaited name.
+  fun observe(name: String?) {
+    if (name == null || name != awaiting) return
+    awaiting = null
+    val l = launch ?: return
+    launch = null
+    l(ticket)
+  }
+
+  /// getName() read [name] while start [t] waits: confirms like [observe]
+  /// when such reads are trustworthy for this start.
+  fun recheck(t: Int, name: String?) {
+    if (readsConfirm && isWaiting(t)) observe(name)
+  }
+
+  /// Start [t]'s deadline passed: launch it anyway. True when it was still
+  /// waiting.
+  fun timeout(t: Int): Boolean {
+    val l = launch
+    if (t != ticket || l == null) return false
+    launch = null
+    awaiting = null
+    l(t)
+    return true
+  }
+
+  fun isWaiting(t: Int): Boolean = t == ticket && launch != null
+
+  /// Whether start [t]'s outcome may still be delivered.
+  fun isCurrent(t: Int): Boolean = t == ticket
+
+  /// stop_advertising / teardown: drop a deferred start; outcomes of
+  /// earlier starts become stale.
+  fun cancel() {
+    ticket++
+    launch = null
   }
 }

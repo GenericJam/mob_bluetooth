@@ -2,7 +2,8 @@ defmodule MobBluetooth.AndroidPolicyTest do
   # Runs the pure-policy scenarios in test/kotlin/MobBluetoothPolicyTest.kt
   # against the real priv/native/android/MobBluetoothBridge.kt: discovery
   # permissions + failure reasons (MOB-319), concurrent pair() waiters
-  # (MOB-320), and adapter-name restore around LE advertising (MOB-321).
+  # (MOB-320), adapter-name restore around LE advertising (MOB-321), and
+  # holding an LE advertising start until its local_name lands (MOB-360).
   # Tagged :kotlin — excluded when kotlinc / java / android-35 are missing
   # (see test_helper.exs).
   use ExUnit.Case, async: false

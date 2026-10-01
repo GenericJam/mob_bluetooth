@@ -162,6 +162,180 @@ private val scenarios: Map<String, () -> Unit> = mapOf(
         g.restore(a.setName)
         expect("Moto", a.calls.last(), "a late echo of our rename is not the original")
     },
+    "name_advert_rename_awaits_the_new_name" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        expect(AdvertName("Midi", false), g.prepareAdvert("Moto", "Midi", a.setName), "rename")
+        expect(listOf("Midi"), a.calls, "renamed")
+    },
+    "name_advert_refused_rename_awaits_nothing" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter(accept = false)
+        expect(AdvertName(null, false), g.prepareAdvert("Moto", "Midi", a.setName), "refused")
+    },
+    "name_advert_without_a_name_on_a_settled_adapter_awaits_nothing" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        expect(AdvertName(null, false), g.prepareAdvert("Moto", null, a.setName), "never renamed")
+        g.prepareAdvert("Moto", "Midi", a.setName)
+        g.restore(a.setName)
+        g.observe("Moto")
+        expect(AdvertName(null, false), g.prepareAdvert("Moto", null, a.setName), "restore observed")
+        expect(listOf("Midi", "Moto"), a.calls, "no extra setName")
+    },
+    "name_advert_without_a_name_after_a_named_one_awaits_the_restore" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        g.prepareAdvert("Moto", "Midi", a.setName)
+        g.observe("Midi")
+        // The restore is as async as the rename: the scan response would
+        // still pack "Midi" if advertising started now.
+        expect(AdvertName("Moto", false), g.prepareAdvert("Midi", null, a.setName), "restore requested now")
+        expect(listOf("Midi", "Moto"), a.calls, "restored")
+    },
+    "name_advert_without_a_name_during_a_pending_restore_awaits_it" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        g.prepareAdvert("Moto", "Midi", a.setName)
+        g.restore(a.setName) // stop_advertising
+        expect(AdvertName("Moto", true), g.prepareAdvert("Midi", null, a.setName), "restore still on its way")
+        expect(listOf("Midi", "Moto"), a.calls, "not asked twice")
+    },
+    "name_advert_without_a_name_awaits_nothing_when_the_restore_is_refused" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        g.prepareAdvert("Moto", "Midi", a.setName)
+        a.accept = false
+        expect(AdvertName(null, false), g.prepareAdvert("Midi", null, a.setName), "name stays as it is")
+    },
+    "name_advert_rename_during_a_pending_restore_is_in_flux" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        g.prepareAdvert("Moto", "Midi", a.setName)
+        g.restore(a.setName)
+        expect(AdvertName("Other", true), g.prepareAdvert("Midi", "Other", a.setName), "restore unobserved")
+        g.restore(a.setName)
+        g.observe("Moto")
+        expect(AdvertName("Midi", false), g.prepareAdvert("Moto", "Midi", a.setName), "restore observed")
+    },
+    "adv_start_without_a_name_after_a_named_one_waits_for_the_restore" to {
+        val g = AdapterNameGuard()
+        val a = FakeAdapter()
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<String>()
+        val named = g.prepareAdvert("Moto", "Midi", a.setName)
+        gate.begin("Moto", named.awaiting, named.inFlux) { launched.add("named") }
+        g.observe("Midi"); gate.observe("Midi")
+        gate.cancel() // teardown before re-arming
+        val plain = g.prepareAdvert("Midi", null, a.setName)
+        gate.begin("Midi", plain.awaiting, plain.inFlux) { launched.add("plain") }
+        expect(listOf("named"), launched, "plain start waits while the stack still says Midi")
+        g.observe("Moto"); gate.observe("Moto")
+        expect(listOf("named", "plain"), launched, "starts once the own name is back")
+    },
+    "adv_start_without_a_rename_launches_now" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Moto", null, false) { launched.add(it) }
+        expect(listOf(t), launched, "no-name start launches at once")
+        expect(false, gate.isWaiting(t), "not waiting")
+        expect(true, gate.isCurrent(t), "its outcome is delivered")
+    },
+    "adv_start_with_the_name_already_carried_launches_now" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Midi", "Midi", false) { launched.add(it) }
+        expect(listOf(t), launched, "adapter already reports the name")
+    },
+    "adv_start_after_a_rename_waits_until_the_name_is_observed" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Moto", "Midi", false) { launched.add(it) }
+        expect(emptyList<Int>(), launched, "setName is async: the stack still packs Moto")
+        expect(true, gate.isWaiting(t), "waiting for Midi")
+        gate.observe("Moto")
+        gate.observe(null)
+        expect(emptyList<Int>(), launched, "other names don't release it")
+        gate.observe("Midi")
+        expect(listOf(t), launched, "released by the observed rename")
+        gate.observe("Midi")
+        expect(false, gate.timeout(t), "timeout after release is a no-op")
+        expect(listOf(t), launched, "launched exactly once")
+    },
+    "adv_start_whose_name_is_never_observed_launches_on_timeout" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Moto", "Midi", false) { launched.add(it) }
+        expect(true, gate.timeout(t), "still waiting at the deadline")
+        expect(listOf(t), launched, "started anyway")
+        gate.observe("Midi")
+        expect(false, gate.timeout(t), "second timeout")
+        expect(listOf(t), launched, "launched exactly once")
+        expect(true, gate.isCurrent(t), "its outcome is delivered")
+    },
+    "adv_stop_cancels_a_waiting_start" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Moto", "Midi", false) { launched.add(it) }
+        gate.cancel()
+        gate.observe("Midi")
+        expect(false, gate.timeout(t), "its timeout finds nothing to start")
+        expect(emptyList<Int>(), launched, "no startAdvertising after stop")
+        expect(false, gate.isCurrent(t), "no late event either")
+    },
+    "adv_stop_makes_a_launched_starts_late_outcome_stale" to {
+        val gate = AdvertStartGate()
+        val t = gate.begin("Moto", null, false) {}
+        gate.cancel()
+        expect(false, gate.isCurrent(t), "onStartSuccess after stop is dropped")
+    },
+    "adv_newer_start_supersedes_a_waiting_one" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<String>()
+        val a = gate.begin("Moto", "A", false) { launched.add("A") }
+        gate.cancel() // the bridge tears down before re-arming
+        val b = gate.begin("Moto", "B", false) { launched.add("B") }
+        gate.observe("A")
+        expect(false, gate.timeout(a), "A's timeout")
+        expect(emptyList<String>(), launched, "A never starts")
+        gate.observe("B")
+        expect(listOf("B"), launched, "B starts once its name lands")
+        expect(false, gate.isCurrent(a), "A gets no event")
+        expect(true, gate.isCurrent(b), "B's outcome is delivered")
+    },
+    "adv_name_read_confirms_only_a_settled_rename" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<Int>()
+        val t = gate.begin("Moto", "Midi", false) { launched.add(it) }
+        gate.recheck(t, "Moto")
+        expect(emptyList<Int>(), launched, "still the old name")
+        gate.recheck(t, "Midi")
+        expect(listOf(t), launched, "getName() reports the new name")
+
+        // With an earlier rename / restore unobserved, getName() may still
+        // report an old "Midi" that the stack is about to overwrite.
+        val g2 = AdvertStartGate()
+        val l2 = mutableListOf<Int>()
+        val t2 = g2.begin("Midi", "Midi", true) { l2.add(it) }
+        expect(emptyList<Int>(), l2, "an in-flux name doesn't count as carried")
+        g2.recheck(t2, "Midi")
+        expect(emptyList<Int>(), l2, "a read can't confirm an in-flux name")
+        g2.observe("Moto")
+        g2.observe("Midi")
+        expect(listOf(t2), l2, "the broadcast sequence can")
+    },
+    "adv_unobserved_rename_of_a_cancelled_start_unsettles_the_next" to {
+        val gate = AdvertStartGate()
+        val launched = mutableListOf<String>()
+        gate.begin("Moto", "A", false) { launched.add("first") }
+        gate.cancel()
+        // getName() already reads A but the broadcast hasn't arrived: the
+        // stack may still be mid-change, so don't start on the read.
+        gate.begin("A", "A", false) { launched.add("second") }
+        expect(emptyList<String>(), launched, "waits for the pending rename")
+        gate.observe("A")
+        expect(listOf("second"), launched, "released by the broadcast")
+    },
 )
 
 fun main(args: Array<String>) {
