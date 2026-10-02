@@ -1,8 +1,8 @@
-# AGENTS.md — orientation for AI agents working on mob_bluetooth
+# mob_bluetooth — Agent Instructions
 
-You're in **mob_bluetooth**, a Mob plugin for Bluetooth discovery, pairing, and profile sessions. It wraps two different radios sitting behind one Elixir surface: **Bluetooth Classic** (BR/EDR — Android-only) for `MobBluetooth`, `MobBluetooth.Hfp`, `MobBluetooth.Spp`; and **Bluetooth Low Energy** (BLE — CoreBluetooth on iOS, `BluetoothLeAdvertiser` / `BluetoothGattServer` on Android) for the `ble_*` central surface and the `MobBluetooth.Le` GATT peripheral.
+You're in **mob_bluetooth**, a Mob plugin for Bluetooth discovery, pairing, and profile sessions, extracted from mob core (Wave 1/2 of the plugin epic). It wraps two different radios sitting behind one Elixir surface: **Bluetooth Classic** (BR/EDR — Android-only) for `MobBluetooth`, `MobBluetooth.Hfp`, `MobBluetooth.Spp`; and **Bluetooth Low Energy** (BLE — CoreBluetooth on iOS, `BluetoothLeAdvertiser` / `BluetoothGattServer` on Android) for the `ble_*` central surface and the `MobBluetooth.Le` GATT peripheral.
 
-**Also read [`~/code/mob/AGENTS.md`](../mob/AGENTS.md)** for the system view — the three-repo topology, plugin manifest schema, `Mob.Screen` / `Mob.Sigil`, driving a running app from your session, and the cross-cutting pre-empt-failure rules. This file is mob_bluetooth-specific.
+**Also read [`~/code/mob/AGENTS.md`](../mob/AGENTS.md)** for the system view — the three-repo topology, plugin manifest schema, `Mob.Screen` / `Mob.Sigil`, driving a running app from your session, and the cross-cutting pre-empt-failure rules — and [`~/code/mob/MOB_PLUGINS.md`](../mob/MOB_PLUGINS.md) for the manifest schema. This file is mob_bluetooth-specific.
 
 > **Keep this file current.** When you add a profile, change the event shape, add a native path, or hit a gotcha that would trip the next agent, fix it here in the same commit — not in a follow-up.
 
@@ -92,8 +92,10 @@ Before committing, run all in this order:
 ```bash
 mix test                            # full suite must pass
 mix format                          # apply formatting
-mix credo --strict                  # whole tree, includes ExSlop
+mix credo --strict                  # whole tree, includes ExSlop + jump_credo_checks
 ```
+
+Native changes (`.m` / `.zig` / `.kt`) aren't exercised by `mix test` (beyond the `:kotlin` policy tests) — they need a `mix mob.deploy --native` of a host app (mob_plugin_demo is the canonical driver) and a real-device check on the verified device set (see Testing) before committing. Simulators / emulators have no radio.
 
 Pre-push hook (`.githooks/pre-push`, activated via `git config core.hooksPath .githooks`) runs format/credo/compile on every push and the full suite when `mix.exs` changes (release preflight).
 
@@ -118,6 +120,6 @@ Spawn a subagent, point it at the diff, tell it to find defects rather than appr
 
 Canonical process in [`~/code/mob/RELEASE.md`](../mob/RELEASE.md). mob_bluetooth specifics:
 
-* `@version` in `mix.exs` is the trigger. Push it to master, `.github/workflows/release.yml` handles tag / GitHub Release / Hex publish, each step idempotent, and additionally verifies `MOB_PLUGIN_SIGN_KEY` matches the committed `priv/mob_plugin.pub` before publishing.
+* `@version` in `mix.exs` is the trigger. Push it to master, `.github/workflows/release.yml` handles tag / GitHub Release / Hex publish, each step idempotent, and additionally verifies `MOB_PLUGIN_SIGN_KEY` matches the committed `priv/mob_plugin.pub` before publishing. Do NOT bump versions without explicit permission.
 * The `mob` floor pin is load-bearing. Do not bump if the plugin uses a new mob feature that hasn't shipped yet.
 * **Never ship without physical-device verification** on both the Moto G reference device (Classic + Android BLE) and the iPhone SE (iOS BLE). Simulators and emulators do not have radios; a "green on host + emulator" release is a release you didn't test.
