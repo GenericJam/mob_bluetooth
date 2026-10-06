@@ -658,7 +658,8 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                   }
               } catch (e: SecurityException) {
                   // Permission denied: fall through to the system dialog;
-                  // the bond-state receiver still surfaces the outcome.
+                  // the bond-state receiver still surfaces the outcome. A
+                  // separate clause for lint (see bleGattServerCallback).
                   Log.w(
                       "MobBluetooth",
                       "PIN pairing auto-answer failed for ${dev.address}: ${e.javaClass.simpleName}",
@@ -1528,6 +1529,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   /// MOB-321: put back the adapter name start_advertising(local_name:)
   /// replaced. No-op when nothing was renamed; if the adapter is unreachable
   /// or the rename is refused, the saved name is kept for the next attempt.
+  /// (The SecurityException catch: see bleGattServerCallback.)
   private fun restoreAdapterName() {
       val adapter = btAdapter() ?: return
       bleNameGuard.restore { n ->

@@ -19,7 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `bonded: false` when the bond state can't be read. The PIN auto-answer,
   GATT `sendResponse`, advertising/GATT teardown and adapter-name restore
   calls handle `SecurityException` explicitly (they already swallowed it
-  through `catch (Exception)`, which lint doesn't count). No change for
+  through a broader `catch`, which lint doesn't count). No change for
   granted permissions.
 
 ## [0.4.1] - 2026-10-01
