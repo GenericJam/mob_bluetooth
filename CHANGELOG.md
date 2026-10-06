@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Android: the bridge passes `./gradlew :app:lintRelease`** (MOB-400). Eight
+  `MissingPermission` errors in `MobBluetoothBridge.kt` failed a host app's
+  release lint. The discovery receiver read `device.bondState` with no
+  handler; it needs `BLUETOOTH_CONNECT` on API 31+, which discovery doesn't,
+  so an app holding `BLUETOOTH_SCAN` without it crashed on the main thread
+  at the first device found. `{:bt, :discovered, …}` now carries
+  `bonded: false` when the bond state can't be read. The PIN auto-answer,
+  GATT `sendResponse`, advertising/GATT teardown and adapter-name restore
+  calls handle `SecurityException` explicitly (they already swallowed it
+  through a broader `catch`, which lint doesn't count). No change for
+  granted permissions.
+
 ## [0.4.1] - 2026-10-01
 
 ### Fixed
