@@ -1197,8 +1197,9 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   /// GATT_SUCCESS so a central isn't left hanging.
   ///
   /// Lint's MissingPermission only accepts an explicit SecurityException catch,
-  /// so the GATT calls here and in bleTeardown/restoreAdapterName list one
-  /// before catch (Exception). Don't merge them: lintRelease fails in the host.
+  /// so the GATT calls here and in setPin/bleTeardown/restoreAdapterName list
+  /// one before the broader catch. Don't merge them: lintRelease fails in the
+  /// host.
   private fun bleGattServerCallback(pid: Long) = object : BluetoothGattServerCallback() {
       override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
           when (newState) {
@@ -1247,8 +1248,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           if (responseNeeded) {
               try {
                   bleGattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, value)
-              } catch (_: SecurityException) {
-              } catch (_: Exception) {}
+              } catch (_: SecurityException) {} catch (_: Exception) {}
           }
       }
 
@@ -1266,8 +1266,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           if (responseNeeded) {
               try {
                   bleGattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, value)
-              } catch (_: SecurityException) {
-              } catch (_: Exception) {}
+              } catch (_: SecurityException) {} catch (_: Exception) {}
           }
       }
   }
