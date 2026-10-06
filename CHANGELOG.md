@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Android: the bridge passes `./gradlew :app:lintRelease`** (MOB-400). Eight
+  `MissingPermission` errors in `MobBluetoothBridge.kt` failed a host app's
+  release lint. The discovery receiver read `device.bondState` with no
+  handler, so a `BLUETOOTH_CONNECT` grant revoked mid-discovery threw on the
+  main thread; it now reports the device as unbonded. The PIN auto-answer,
+  GATT `sendResponse`, advertising/GATT teardown and adapter-name restore
+  calls handle `SecurityException` explicitly (they already swallowed it
+  through `catch (Exception)`, which lint doesn't count). No change for
+  granted permissions.
+
 ## [0.4.1] - 2026-10-01
 
 ### Fixed
