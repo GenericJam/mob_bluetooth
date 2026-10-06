@@ -362,10 +362,12 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
                       else
                           @Suppress("DEPRECATION") intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                       if (device != null) {
-                          // bondState needs BLUETOOTH_CONNECT on 31+; a grant
-                          // revoked mid-discovery throws here, on the main
-                          // thread. Report the device as unbonded rather than
-                          // crash, like btSafeName falls back to the address.
+                          // bondState needs BLUETOOTH_CONNECT on 31+, which
+                          // discovery (BLUETOOTH_SCAN) doesn't: an app holding
+                          // SCAN without CONNECT would throw here, on the main
+                          // thread, for every device found. Report it unbonded
+                          // (unknown) instead, as btSafeName falls back to the
+                          // address.
                           val bonded = try {
                               device.bondState == BluetoothDevice.BOND_BONDED
                           } catch (_: SecurityException) { false }
@@ -1192,6 +1194,10 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   /// The GATT-server callback: central connect/disconnect, CCCD subscribe, and
   /// characteristic writes. Always answers responseNeeded requests with
   /// GATT_SUCCESS so a central isn't left hanging.
+  ///
+  /// Lint's MissingPermission only accepts an explicit SecurityException catch,
+  /// so the GATT calls here and in bleTeardown/restoreAdapterName list one
+  /// before catch (Exception). Don't merge them: lintRelease fails in the host.
   private fun bleGattServerCallback(pid: Long) = object : BluetoothGattServerCallback() {
       override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
           when (newState) {
@@ -1492,7 +1498,8 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
   /// Tear down advertiser + GATT server + central state, and (unless a
   /// restart passes restoreName = false) give the adapter its own name back.
   /// Must tolerate being called when nothing is up (idempotent). Run on
-  /// `main` by callers.
+  /// `main` by callers. (The SecurityException catches: see
+  /// bleGattServerCallback.)
   private fun bleTeardown(restoreName: Boolean = true) {
       bleStartGate.cancel()
       val advertiser = bleAdvertiser
