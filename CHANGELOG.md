@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.5.0] - 2026-10-09
 
 ### Added
 
@@ -21,14 +21,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   (`{:error, :bridge_not_registered}`), a bridge without an Activity, a
   `SecurityException` from `getState()` (the install-time `BLUETOOTH`
   permission went missing), or the host stub's `nif_not_loaded` fail. Run it
-  with `mix mob.selftest` from a host app (mob_dev 0.7.17).
+  with `mix mob.selftest` from a host app (mob_dev 0.7.17+).
 
 ### Changed
 
-- **Breaking: requires mob 0.9.15** (for `Mob.Plugin.SelfTest`). The
-  manifest's `mob_version` is now `~> 0.9` (was `~> 0.6`), so hosts on mob
-  0.7 / 0.8 can no longer activate this version; the next release should be
-  a minor bump.
+- **Breaking: requires mob >= 0.9.15** (for `Mob.Plugin.SelfTest`). The
+  `:mob` dependency is now `~> 0.9 and >= 0.9.15` (was `~> 0.7`) and the
+  manifest's `mob_version` is `~> 0.9` (was `~> 0.6`), so hosts on mob
+  0.7 / 0.8 / 0.9.0–0.9.14 can no longer use this version.
 
 ## [0.4.2] - 2026-10-06
 
