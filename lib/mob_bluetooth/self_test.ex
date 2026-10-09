@@ -36,8 +36,9 @@ defmodule MobBluetooth.SelfTest do
       Activity), `{:error, :bridge_not_registered}` (`register()` never ran or
       the method id lookup failed), `{:error, :security_exception}` (Android:
       `getState()` threw, so the host manifest lost the install-time
-      `BLUETOOTH` permission), any other `{:error, _}` and `:unknown` (iOS: no
-      state report within 3 s) → `{:fail, _}`.
+      `BLUETOOTH` permission), any other `{:error, _}`, `:unknown` (iOS: no
+      state report within 3 s) and `:unknown_authorization` (iOS: a
+      `CBManager.authorization` value newer than the SDK) → `{:fail, _}`.
 
   The host stub's `nif_not_loaded` (the NIF is not linked into this build)
   is a failure too.

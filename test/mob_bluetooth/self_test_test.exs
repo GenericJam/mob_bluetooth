@@ -67,6 +67,9 @@ defmodule MobBluetooth.SelfTestTest do
 
       assert {:fail, "bt_adapter_state/0 returned :ok" <> _} =
                assert_result(SelfTest.classify(:ok))
+
+      assert {:fail, "bt_adapter_state/0 returned :unknown_authorization" <> _} =
+               assert_result(SelfTest.classify(:unknown_authorization))
     end
   end
 

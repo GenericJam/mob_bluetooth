@@ -307,7 +307,8 @@ static ERL_NIF_TERM nif_ble_stop_advertise(ErlNifEnv *env, int argc,
 
 // ── Adapter state (MOB-418) ───────────────────────────────────────────────
 // bt_adapter_state() → on | off | resetting | unsupported | unauthorized |
-// not_determined | restricted | unknown, synchronously. MobBluetooth.SelfTest's
+// not_determined | restricted | unknown | unknown_authorization,
+// synchronously. MobBluetooth.SelfTest's
 // proof that this NIF is linked and CoreBluetooth answers. Never prompts:
 // creating a CB manager while the app's Bluetooth authorization is undecided
 // raises the permission prompt, so the class-level CBManager.authorization is
@@ -359,7 +360,7 @@ static ERL_NIF_TERM nif_bt_adapter_state(ErlNifEnv *env, int argc,
     break;
   default:
     // A value newer than this SDK: don't risk a manager that could prompt.
-    return enif_make_atom(env, "unknown");
+    return enif_make_atom(env, "unknown_authorization");
   }
 
   MobBleStateProbe *probe = [MobBleStateProbe new];
