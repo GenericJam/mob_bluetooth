@@ -68,7 +68,7 @@ private val scenarios: Map<String, () -> Unit> = mapOf(
         val codes = listOf(
             MobBluetoothPolicy.ADAPTER_ON, MobBluetoothPolicy.ADAPTER_OFF,
             MobBluetoothPolicy.ADAPTER_TURNING_ON, MobBluetoothPolicy.ADAPTER_TURNING_OFF,
-            MobBluetoothPolicy.ADAPTER_UNSUPPORTED, MobBluetoothPolicy.ADAPTER_UNAUTHORIZED,
+            MobBluetoothPolicy.ADAPTER_UNSUPPORTED, MobBluetoothPolicy.ADAPTER_SECURITY_EXCEPTION,
             MobBluetoothPolicy.ADAPTER_NO_ACTIVITY, MobBluetoothPolicy.ADAPTER_FAILED,
             MobBluetoothPolicy.ADAPTER_UNKNOWN,
         )

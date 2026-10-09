@@ -53,6 +53,9 @@ defmodule MobBluetooth.SelfTestTest do
 
       assert {:fail, "Kotlin MobBluetoothBridge not registered" <> _} =
                assert_result(SelfTest.classify({:error, :bridge_not_registered}))
+
+      assert {:fail, "BluetoothAdapter.getState() threw SecurityException" <> _} =
+               assert_result(SelfTest.classify({:error, :security_exception}))
     end
 
     test "an unknown state and anything off-contract fail, quoting the answer" do
@@ -110,23 +113,30 @@ defmodule MobBluetooth.SelfTestTest do
     # bt_adapter_state's Kotlin answer is an Int the Zig NIF decodes; a code
     # that drifts on one side makes the self-test misreport the adapter.
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
-    test "the Zig NIF decodes every MobBluetoothPolicy.ADAPTER_* code to its own atom" do
+    test "the Zig NIF decodes every MobBluetoothPolicy.ADAPTER_* code to its own term" do
       kotlin =
         Regex.scan(~r/const val ADAPTER_(\w+) = (\d+)/, File.read!(@bridge),
           capture: :all_but_first
         )
 
+      [decoder] =
+        Regex.run(~r/^fn adapterStateAtom\(.*?^}$/ms, File.read!(@zig))
+
       zig =
         ~r/^\s+(\d+) => erts\.(?:atom\(env, "(\w+)"\)|makeTuple\(env, \.\{ erts\.atom\(env, "error"\), erts\.atom\(env, "(\w+)"\))/m
-        |> Regex.scan(File.read!(@zig), capture: :all_but_first)
+        |> Regex.scan(decoder, capture: :all_but_first)
         |> Map.new(fn [code | atoms] -> {code, Enum.find(atoms, &(&1 != ""))} end)
 
+      expected_name = %{"FAILED" => "bridge_exception"}
+
       for [name, code] <- kotlin do
-        expected = if name == "FAILED", do: "bridge_exception", else: String.downcase(name)
+        expected = Map.get(expected_name, name, String.downcase(name))
         assert zig[code] == expected, "ADAPTER_#{name} = #{code} decodes to #{inspect(zig[code])}"
       end
 
-      assert map_size(zig) == length(kotlin)
+      # 0 is what CallStaticIntMethod returns when the Kotlin method threw.
+      assert zig["0"] == "java_exception"
+      assert map_size(zig) == length(kotlin) + 1
     end
   end
 end

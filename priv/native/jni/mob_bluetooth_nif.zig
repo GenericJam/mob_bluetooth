@@ -1192,16 +1192,17 @@ export fn nif_bt_adapter_state(
     return adapterStateAtom(env, code);
 }
 
-// MobBluetoothPolicy.ADAPTER_* (MobBluetoothBridge.kt) → atom; keep in step.
+// MobBluetoothPolicy.ADAPTER_* (MobBluetoothBridge.kt) → term; keep in step.
 // 0 is no code: CallStaticIntMethod returns it when the bridge method threw.
 fn adapterStateAtom(env: ?*erts.ErlNifEnv, code: jni.JInt) erts.ERL_NIF_TERM {
     return switch (code) {
+        0 => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "java_exception") }),
         1 => erts.atom(env, "on"),
         2 => erts.atom(env, "off"),
         3 => erts.atom(env, "turning_on"),
         4 => erts.atom(env, "turning_off"),
         5 => erts.atom(env, "unsupported"),
-        6 => erts.atom(env, "unauthorized"),
+        6 => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "security_exception") }),
         7 => erts.atom(env, "no_activity"),
         8 => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_exception") }),
         9 => erts.atom(env, "unknown"),

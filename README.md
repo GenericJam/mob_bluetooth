@@ -77,8 +77,9 @@ mix mob.plugin.trust mob_bluetooth
   dev target (no radio) is unsupported.
 - **Self-test:** `mix mob.selftest` (mob_dev 0.7.17+) runs `MobBluetooth.SelfTest`
   on a device: a read-only `bt_adapter_state/0` NIF call that passes when the
-  adapter reports a state and skips with `:needs_hardware` when there is no
-  adapter (iOS Simulator) or `:needs_user` before Bluetooth permission is granted.
+  adapter reports a state, skips with `:needs_hardware` when the native side
+  reports no adapter, and with `:needs_user` while Bluetooth permission is
+  undecided or denied (an iOS Simulator can't be pre-granted Bluetooth).
 
 ## Permissions
 

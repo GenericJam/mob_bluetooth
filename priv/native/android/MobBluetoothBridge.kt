@@ -487,10 +487,14 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
 
   // ── Adapter state (MOB-418) ─────────────────────────────────────────────
   // Synchronous and read-only: MobBluetooth.SelfTest's proof that the bridge
-  // registered and can reach the adapter. Never starts discovery or prompts.
-  // getState() needs only the legacy install-time BLUETOOTH permission
-  // (API <= 30) and no runtime permission on API 31+. Returns a
-  // MobBluetoothPolicy.ADAPTER_* code; the NIF turns it into an atom. Catches
+  // registered, holds the Activity the bootstrap hands over, and can reach
+  // the adapter. getState() itself needs no Activity; the check is there on
+  // purpose, because every other bt_* call does need one. Never starts
+  // discovery or prompts. getState() needs only the legacy install-time
+  // BLUETOOTH permission (API <= 30) and no runtime permission on API 31+, so
+  // a SecurityException means the host's manifest lost that permission (a
+  // build bug, not something a user can grant). Returns a
+  // MobBluetoothPolicy.ADAPTER_* code; the NIF turns it into a term. Catches
   // everything so no Java exception unwinds through the NIF (rule 9).
   @JvmStatic
   fun bt_adapter_state(): Int {
@@ -500,7 +504,7 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
           val adapter = mgr?.adapter ?: return MobBluetoothPolicy.ADAPTER_UNSUPPORTED
           MobBluetoothPolicy.adapterStateCode(adapter.state)
       } catch (_: SecurityException) {
-          MobBluetoothPolicy.ADAPTER_UNAUTHORIZED
+          MobBluetoothPolicy.ADAPTER_SECURITY_EXCEPTION
       } catch (_: Throwable) {
           MobBluetoothPolicy.ADAPTER_FAILED
       }
@@ -1665,7 +1669,7 @@ internal object MobBluetoothPolicy {
   const val ADAPTER_TURNING_ON = 3
   const val ADAPTER_TURNING_OFF = 4
   const val ADAPTER_UNSUPPORTED = 5
-  const val ADAPTER_UNAUTHORIZED = 6
+  const val ADAPTER_SECURITY_EXCEPTION = 6
   const val ADAPTER_NO_ACTIVITY = 7
   const val ADAPTER_FAILED = 8
   const val ADAPTER_UNKNOWN = 9

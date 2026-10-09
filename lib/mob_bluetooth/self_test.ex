@@ -15,24 +15,29 @@ defmodule MobBluetooth.SelfTest do
       app is already allowed does it create a throwaway `CBCentralManager`
       (power alert off) and wait up to 3 s for its first state. An undecided
       authorization is answered without a manager, since creating one would
-      prompt.
+      prompt. On a simulator, where Bluetooth cannot be pre-granted (no
+      `simctl privacy` service), expect `:not_determined`; an allowed one
+      reports `:unsupported`.
 
   What each answer maps to:
 
     * `:on`, `:off`, `:turning_on`, `:turning_off`, `:resetting` → `:pass`.
       The radio exists and the native side reported it; whether it is
       switched on is the user's setting, not the plugin's health.
-    * `:unsupported` → `{:skip, :needs_hardware}`: no adapter (an Android
-      device without `BluetoothManager.adapter`, the iOS Simulator).
-    * `:unauthorized` (denied) and `:not_determined` (iOS, never asked) →
-      `{:skip, :needs_user}`. Bluetooth has no `simctl privacy` service, so
-      a simulator cannot be pre-granted.
+    * `:unsupported` → `{:skip, :needs_hardware}`: the native side reported
+      no adapter (an Android device without `BluetoothManager.adapter`, the
+      iOS Simulator once allowed).
+    * `:unauthorized` (iOS: denied) and `:not_determined` (iOS: never asked)
+      → `{:skip, :needs_user}`: the adapter state is behind a permission a
+      person has to grant.
     * `:restricted` (iOS: Screen Time / MDM) → a string skip; nobody on the
       device can grant it.
     * `:no_activity` (Android: the bootstrap never handed the bridge an
       Activity), `{:error, :bridge_not_registered}` (`register()` never ran or
-      the method id lookup failed), `{:error, _}` and `:unknown` (iOS: no state
-      report within 3 s) → `{:fail, _}`.
+      the method id lookup failed), `{:error, :security_exception}` (Android:
+      `getState()` threw, so the host manifest lost the install-time
+      `BLUETOOTH` permission), any other `{:error, _}` and `:unknown` (iOS: no
+      state report within 3 s) → `{:fail, _}`.
 
   The host stub's `nif_not_loaded` (the NIF is not linked into this build)
   is a failure too.
@@ -71,6 +76,12 @@ defmodule MobBluetooth.SelfTest do
       {:fail,
        "Kotlin MobBluetoothBridge not registered (nativeRegister never ran or the " <>
          "bt_adapter_state method-ID lookup failed)"}
+
+  def classify({:error, :security_exception}),
+    do:
+      {:fail,
+       "BluetoothAdapter.getState() threw SecurityException: the host AndroidManifest " <>
+         "lacks the install-time android.permission.BLUETOOTH the plugin manifest declares"}
 
   def classify(:unknown),
     do:
