@@ -10,6 +10,9 @@
     bt_list_paired/0,
     bt_start_discovery/0,
     bt_cancel_discovery/0,
+    %% Adapter state, synchronous (MOB-418, MobBluetooth.SelfTest): both
+    %% platforms register it (zig on Android, objc on iOS).
+    bt_adapter_state/0,
     bt_make_discoverable/1,
     bt_pair/1,
     bt_unpair/1,
@@ -49,6 +52,9 @@ bt_start_discovery() ->
     erlang:nif_error(nif_not_loaded).
 
 bt_cancel_discovery() ->
+    erlang:nif_error(nif_not_loaded).
+
+bt_adapter_state() ->
     erlang:nif_error(nif_not_loaded).
 
 bt_make_discoverable(_DurationSeconds) ->

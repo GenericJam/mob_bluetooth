@@ -35,12 +35,12 @@ defmodule MobBluetooth.MixProject do
   end
 
   defp deps do
-    # Local path deps while the plugin system is dogfooded; switch :mob to the
-    # Hex constraint ("~> 0.6") when mob publishes. :mob_dev is test-only and
-    # never ships.
+    # :mob's floor is the first release with Mob.Plugin.SelfTest (0.9.15).
+    # :mob_dev is test-only (the manifest tests run its pre-publish validator)
+    # and never ships.
     [
-      {:mob, "~> 0.7"},
-      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
+      {:mob, "~> 0.9 and >= 0.9.15"},
+      {:mob_dev, "~> 0.7.17", only: [:dev, :test], runtime: false},
       # Code quality — Credo + ex_slop (AI-pattern checks) + jump_credo_checks,
       # mirroring mob core's pre-commit gate.
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},

@@ -305,6 +305,82 @@ static ERL_NIF_TERM nif_ble_stop_advertise(ErlNifEnv *env, int argc,
   return enif_make_atom(env, "ok");
 }
 
+// ── Adapter state (MOB-418) ───────────────────────────────────────────────
+// bt_adapter_state() → on | off | resetting | unsupported | unauthorized |
+// not_determined | restricted | unknown | unknown_authorization,
+// synchronously. MobBluetooth.SelfTest's
+// proof that this NIF is linked and CoreBluetooth answers. Never prompts:
+// creating a CB manager while the app's Bluetooth authorization is undecided
+// raises the permission prompt, so the class-level CBManager.authorization is
+// read first and only an allowed app gets a (throwaway) CBCentralManager,
+// with the "turn Bluetooth on" alert disabled. The manager is released
+// before returning; the shared scan/advertise managers are not touched.
+// Dirty IO: it waits up to 3 s for the manager's first state report.
+
+@interface MobBleStateProbe : NSObject <CBCentralManagerDelegate>
+@property(nonatomic, strong) dispatch_semaphore_t reported;
+@end
+
+@implementation MobBleStateProbe
+- (void)centralManagerDidUpdateState:(CBCentralManager *)central {
+  if (central.state != CBManagerStateUnknown)
+    dispatch_semaphore_signal(self.reported);
+}
+@end
+
+static const char *ble_adapter_state_name(CBManagerState s) {
+  switch (s) {
+  case CBManagerStatePoweredOn:
+    return "on";
+  case CBManagerStatePoweredOff:
+    return "off";
+  case CBManagerStateResetting:
+    return "resetting";
+  case CBManagerStateUnsupported:
+    return "unsupported";
+  case CBManagerStateUnauthorized:
+    return "unauthorized";
+  default:
+    return "unknown";
+  }
+}
+
+static ERL_NIF_TERM nif_bt_adapter_state(ErlNifEnv *env, int argc,
+                                         const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  (void)argv;
+  switch (CBManager.authorization) {
+  case CBManagerAuthorizationNotDetermined:
+    return enif_make_atom(env, "not_determined");
+  case CBManagerAuthorizationRestricted:
+    return enif_make_atom(env, "restricted");
+  case CBManagerAuthorizationDenied:
+    return enif_make_atom(env, "unauthorized");
+  case CBManagerAuthorizationAllowedAlways:
+    break;
+  default:
+    // A value newer than this SDK: don't risk a manager that could prompt.
+    return enif_make_atom(env, "unknown_authorization");
+  }
+
+  MobBleStateProbe *probe = [MobBleStateProbe new];
+  probe.reported = dispatch_semaphore_create(0);
+  dispatch_queue_t q =
+      dispatch_queue_create("ca.mob.ble.state", DISPATCH_QUEUE_SERIAL);
+  CBCentralManager *central = [[CBCentralManager alloc]
+      initWithDelegate:probe
+                 queue:q
+               options:@{CBCentralManagerOptionShowPowerAlertKey : @NO}];
+  dispatch_semaphore_wait(probe.reported,
+                          dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
+  __block CBManagerState state = CBManagerStateUnknown;
+  dispatch_sync(q, ^{
+    state = central.state;
+    central.delegate = nil;
+  });
+  return enif_make_atom(env, ble_adapter_state_name(state));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // BLE GATT peripheral surface (MobBluetooth.Le) — advertise a service, notify
 // subscribed centrals, receive writes. Independent of the MobBle scan/advertise
@@ -815,6 +891,7 @@ static ERL_NIF_TERM nif_ble_notify(ErlNifEnv *env, int argc,
 
 // ── Registration ──────────────────────────────────────────────────────────
 static ErlNifFunc nif_funcs[] = {
+    {"bt_adapter_state", 0, nif_bt_adapter_state, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"ble_scan", 1, nif_ble_scan, 0},
     {"ble_stop_scan", 0, nif_ble_stop_scan, 0},
     {"ble_advertise", 1, nif_ble_advertise, 0},

@@ -57,6 +57,24 @@ private val scenarios: Map<String, () -> Unit> = mapOf(
         expect("start_failed",
             MobBluetoothPolicy.discoveryStartFailureReason(false, false, false), "location not needed")
     },
+    // MOB-418: android.bluetooth.BluetoothAdapter.STATE_OFF/TURNING_ON/ON/
+    // TURNING_OFF are 10/11/12/13 (public API constants).
+    "adapter_state_codes_cover_every_adapter_state" to {
+        expect(MobBluetoothPolicy.ADAPTER_OFF, MobBluetoothPolicy.adapterStateCode(10), "STATE_OFF")
+        expect(MobBluetoothPolicy.ADAPTER_TURNING_ON, MobBluetoothPolicy.adapterStateCode(11), "STATE_TURNING_ON")
+        expect(MobBluetoothPolicy.ADAPTER_ON, MobBluetoothPolicy.adapterStateCode(12), "STATE_ON")
+        expect(MobBluetoothPolicy.ADAPTER_TURNING_OFF, MobBluetoothPolicy.adapterStateCode(13), "STATE_TURNING_OFF")
+        expect(MobBluetoothPolicy.ADAPTER_UNKNOWN, MobBluetoothPolicy.adapterStateCode(14), "BLE-only state")
+        val codes = listOf(
+            MobBluetoothPolicy.ADAPTER_ON, MobBluetoothPolicy.ADAPTER_OFF,
+            MobBluetoothPolicy.ADAPTER_TURNING_ON, MobBluetoothPolicy.ADAPTER_TURNING_OFF,
+            MobBluetoothPolicy.ADAPTER_UNSUPPORTED, MobBluetoothPolicy.ADAPTER_SECURITY_EXCEPTION,
+            MobBluetoothPolicy.ADAPTER_NO_ACTIVITY, MobBluetoothPolicy.ADAPTER_FAILED,
+            MobBluetoothPolicy.ADAPTER_UNKNOWN,
+        )
+        expect(codes.size, codes.toSet().size, "codes are distinct")
+        expect(false, 0 in codes, "0 (a thrown CallStaticIntMethod) is no code")
+    },
     "bond_second_caller_joins_and_both_get_the_outcome" to {
         val w = BondWaiters()
         expect(true, w.join("AA", 1), "first caller starts the bond")

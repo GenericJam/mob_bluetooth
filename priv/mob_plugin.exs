@@ -42,10 +42,13 @@ ios_plist_keys =
 
 %{
   name: :mob_bluetooth,
-  mob_version: "~> 0.6",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
   description:
     "Bluetooth Classic (BR/EDR) — discovery, pairing, HFP + SPP — plus BLE (Low Energy): central scan/advertise + GATT peripheral",
+  # On-device proof for `mix mob.selftest` / mob_ci: a read-only
+  # bt_adapter_state/0 round trip through the NIF (see Mob.Plugin.SelfTest).
+  selftest: MobBluetooth.SelfTest,
   # Per-app config this plugin reads at build time (opt-in background BLE).
   host_config_keys: [:ble_background_modes],
   nifs: [

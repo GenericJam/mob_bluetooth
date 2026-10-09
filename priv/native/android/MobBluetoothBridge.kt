@@ -485,6 +485,31 @@ object MobBluetoothBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPer
       nativeDeliverBtDiscoveryCancelled(pid)
   }
 
+  // ── Adapter state (MOB-418) ─────────────────────────────────────────────
+  // Synchronous and read-only: MobBluetooth.SelfTest's proof that the bridge
+  // registered, holds the Activity the bootstrap hands over, and can reach
+  // the adapter. getState() itself needs no Activity; the check is there on
+  // purpose, because every other bt_* call does need one. Never starts
+  // discovery or prompts. getState() needs only the legacy install-time
+  // BLUETOOTH permission (API <= 30) and no runtime permission on API 31+, so
+  // a SecurityException means the host's manifest lost that permission (a
+  // build bug, not something a user can grant). Returns a
+  // MobBluetoothPolicy.ADAPTER_* code; the NIF turns it into a term. Catches
+  // everything so no Java exception unwinds through the NIF (rule 9).
+  @JvmStatic
+  fun bt_adapter_state(): Int {
+      val ctx = activityRef?.get() ?: return MobBluetoothPolicy.ADAPTER_NO_ACTIVITY
+      return try {
+          val mgr = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+          val adapter = mgr?.adapter ?: return MobBluetoothPolicy.ADAPTER_UNSUPPORTED
+          MobBluetoothPolicy.adapterStateCode(adapter.state)
+      } catch (_: SecurityException) {
+          MobBluetoothPolicy.ADAPTER_SECURITY_EXCEPTION
+      } catch (_: Throwable) {
+          MobBluetoothPolicy.ADAPTER_FAILED
+      }
+  }
+
   // ── Discoverability (advertise) ─────────────────────────────────────────
   // Make the device discoverable to nearby Bluetooth devices for
   // `durationSeconds` (Android caps at 300). Fires ACTION_REQUEST_DISCOVERABLE,
@@ -1633,6 +1658,29 @@ internal object MobBluetoothPolicy {
       needsLocation && !fineLocationGranted -> "location_permission_required"
       needsLocation && !locationEnabled -> "location_disabled"
       else -> "start_failed"
+  }
+
+  /// MOB-418: bt_adapter_state()'s answer. The NIF decodes each code into an
+  /// atom (adapterStateAtom in priv/native/jni/mob_bluetooth_nif.zig); keep
+  /// the two in step. 0 is deliberately unused: it is what CallStaticIntMethod
+  /// returns when the call throws, which must not read as a real state.
+  const val ADAPTER_ON = 1
+  const val ADAPTER_OFF = 2
+  const val ADAPTER_TURNING_ON = 3
+  const val ADAPTER_TURNING_OFF = 4
+  const val ADAPTER_UNSUPPORTED = 5
+  const val ADAPTER_SECURITY_EXCEPTION = 6
+  const val ADAPTER_NO_ACTIVITY = 7
+  const val ADAPTER_FAILED = 8
+  const val ADAPTER_UNKNOWN = 9
+
+  /// MOB-418: BluetoothAdapter.getState() → ADAPTER_* code.
+  fun adapterStateCode(state: Int): Int = when (state) {
+      BluetoothAdapter.STATE_ON -> ADAPTER_ON
+      BluetoothAdapter.STATE_OFF -> ADAPTER_OFF
+      BluetoothAdapter.STATE_TURNING_ON -> ADAPTER_TURNING_ON
+      BluetoothAdapter.STATE_TURNING_OFF -> ADAPTER_TURNING_OFF
+      else -> ADAPTER_UNKNOWN
   }
 }
 
