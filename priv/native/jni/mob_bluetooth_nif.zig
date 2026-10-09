@@ -53,6 +53,8 @@ const BtMethods = struct {
     ble_start_advertising: jni.JMethodID = null,
     ble_stop_advertising: jni.JMethodID = null,
     ble_notify: jni.JMethodID = null,
+    // MOB-418: synchronous adapter-state query (MobBluetooth.SelfTest).
+    adapter_state: jni.JMethodID = null,
 };
 
 var g_bt: BtMethods = .{};
@@ -100,6 +102,7 @@ export fn Java_io_mob_bluetooth_MobBluetoothBridge_nativeRegister(jenv: *jni.JNI
     g_bt.ble_start_advertising = cacheMethod(jenv, cls, "ble_start_advertising", "(JLjava/lang/String;)V");
     g_bt.ble_stop_advertising = cacheMethod(jenv, cls, "ble_stop_advertising", "(J)V");
     g_bt.ble_notify = cacheMethod(jenv, cls, "ble_notify", "(JLjava/lang/String;[B)V");
+    g_bt.adapter_state = cacheMethod(jenv, cls, "bt_adapter_state", "()I");
 }
 
 // ── Thread-attach helpers ────────────────────────────────────────────────
@@ -1163,6 +1166,49 @@ export fn nif_bt_cancel_discovery(
     return erts.ok(env);
 }
 
+// bt_adapter_state() → atom, synchronously (MOB-418). The one bt_* NIF that
+// answers in its return value instead of a delivery: MobBluetooth.SelfTest
+// needs a reply that proves the bridge registered, so an unregistered bridge
+// is {error, bridge_not_registered} here, not the :ok + {:bt, :error, ...}
+// that btUnsupported gives the async calls. Read-only: getState() only.
+export fn nif_bt_adapter_state(
+    env: ?*erts.ErlNifEnv,
+    argc: c_int,
+    argv: [*]const erts.ERL_NIF_TERM,
+) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    _ = argv;
+    if (g_bt_cls == null or g_bt.adapter_state == null) {
+        return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_not_registered") });
+    }
+
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse
+        return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "no_jni_env") });
+    defer detachIfAttached(attached);
+
+    const code = jenv.*.CallStaticIntMethod.?(jenv, g_bt_cls, g_bt.adapter_state);
+    jni.exceptionClear(jenv);
+    return adapterStateAtom(env, code);
+}
+
+// MobBluetoothPolicy.ADAPTER_* (MobBluetoothBridge.kt) → atom; keep in step.
+// 0 is no code: CallStaticIntMethod returns it when the bridge method threw.
+fn adapterStateAtom(env: ?*erts.ErlNifEnv, code: jni.JInt) erts.ERL_NIF_TERM {
+    return switch (code) {
+        1 => erts.atom(env, "on"),
+        2 => erts.atom(env, "off"),
+        3 => erts.atom(env, "turning_on"),
+        4 => erts.atom(env, "turning_off"),
+        5 => erts.atom(env, "unsupported"),
+        6 => erts.atom(env, "unauthorized"),
+        7 => erts.atom(env, "no_activity"),
+        8 => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_exception") }),
+        9 => erts.atom(env, "unknown"),
+        else => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.enif_make_int(env, code) }),
+    };
+}
+
 export fn nif_bt_make_discoverable(
     env: ?*erts.ErlNifEnv,
     argc: c_int,
@@ -1550,6 +1596,7 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "bt_list_paired", .arity = 0, .fptr = nif_bt_list_paired, .flags = 0 },
     .{ .name = "bt_start_discovery", .arity = 0, .fptr = nif_bt_start_discovery, .flags = 0 },
     .{ .name = "bt_cancel_discovery", .arity = 0, .fptr = nif_bt_cancel_discovery, .flags = 0 },
+    .{ .name = "bt_adapter_state", .arity = 0, .fptr = nif_bt_adapter_state, .flags = 0 },
     .{ .name = "bt_make_discoverable", .arity = 1, .fptr = nif_bt_make_discoverable, .flags = 0 },
     .{ .name = "bt_pair", .arity = 1, .fptr = nif_bt_pair, .flags = 0 },
     .{ .name = "bt_unpair", .arity = 1, .fptr = nif_bt_unpair, .flags = 0 },

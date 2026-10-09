@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **On-device self-test** (MOB-418). `MobBluetooth.SelfTest` implements
+  `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
+  calls the new read-only NIF `bt_adapter_state/0` (Android: the Kotlin
+  bridge's `BluetoothAdapter.getState()`; iOS: `CBManager.authorization`,
+  then a throwaway `CBCentralManager`'s first state only when Bluetooth is
+  already allowed, so it never prompts). A reported state passes, no adapter
+  is `{:skip, :needs_hardware}`, denied or undecided permission is
+  `{:skip, :needs_user}`; an unregistered bridge
+  (`{:error, :bridge_not_registered}`), a bridge without an Activity, or the
+  host stub's `nif_not_loaded` fail. Run it with `mix mob.selftest` from a
+  host app (mob_dev 0.7.17). Requires mob 0.9.15; `mob_version` in the
+  manifest is now `~> 0.9`.
+
 ## [0.4.2] - 2026-10-06
 
 ### Fixed
